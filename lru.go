@@ -165,12 +165,12 @@ func (c *Cache[K, V]) Remove(key K) bool {
 	}
 
 	entry := element.Value.(*cacheEntry[K, V])
-	
+
 	// call eviction callback if set
 	if c.onEvict != nil {
 		c.onEvict(entry.key, entry.val)
 	}
-	
+
 	delete(c.items, key)
 	c.lruList.Remove(element)
 	return true
@@ -235,6 +235,6 @@ func (c *Cache[K, V]) Capacity() int {
 func (c *Cache[K, V]) OnEvict(f OnEvictFunc[K, V]) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	
+
 	c.onEvict = f
 }

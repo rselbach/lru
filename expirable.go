@@ -22,7 +22,7 @@ type Expirable[K comparable, V any] struct {
 	lruList  *list.List
 	mu       sync.RWMutex
 	ttl      time.Duration
-	timeNow  func() time.Time // for testing
+	timeNow  func() time.Time  // for testing
 	onEvict  OnEvictFunc[K, V] // callback for evictions
 }
 
@@ -221,12 +221,12 @@ func (c *Expirable[K, V]) Remove(key K) bool {
 	}
 
 	entry := element.Value.(*expirableEntry[K, V])
-	
+
 	// call eviction callback if set
 	if c.onEvict != nil {
 		c.onEvict(entry.key, entry.val)
 	}
-	
+
 	delete(c.items, key)
 	c.lruList.Remove(element)
 	return true
@@ -344,7 +344,7 @@ func (c *Expirable[K, V]) SetTimeNowFunc(f func() time.Time) {
 func (c *Expirable[K, V]) OnEvict(f OnEvictFunc[K, V]) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	
+
 	c.onEvict = f
 }
 
@@ -363,7 +363,7 @@ func (c *Expirable[K, V]) removeExpiredLocked() {
 			delete(c.items, entry.key)
 			c.lruList.Remove(element)
 		}
-		
+
 		element = nextElement
 	}
 }
@@ -377,14 +377,14 @@ func (c *Expirable[K, V]) RemoveExpired() int {
 
 	now := c.timeNow()
 	removed := 0
-	
+
 	// Count items to be removed
 	expiredItems := make([]K, 0)
 	expiredValues := make([]V, 0)
-	
+
 	for element := c.lruList.Front(); element != nil; {
 		nextElement := element.Next() // save next element before potentially removing current one
-		
+
 		entry := element.Value.(*expirableEntry[K, V])
 		if now.After(entry.expiry) {
 			expiredItems = append(expiredItems, entry.key)
@@ -393,16 +393,16 @@ func (c *Expirable[K, V]) RemoveExpired() int {
 			c.lruList.Remove(element)
 			removed++
 		}
-		
+
 		element = nextElement
 	}
-	
+
 	// Call eviction callbacks if set
 	if c.onEvict != nil {
 		for i := range expiredItems {
 			c.onEvict(expiredItems[i], expiredValues[i])
 		}
 	}
-	
+
 	return removed
 }

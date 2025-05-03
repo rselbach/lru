@@ -40,67 +40,56 @@ func Example_expirableBasic() {
 
 // This example demonstrates using GetWithTTL to retrieve a value along with its remaining TTL.
 func Example_getWithTTL() {
-	// For this example, we'll create a small wrapper to simulate the passage of time
-	type timedCache struct {
-		*lru.Expirable[string, string]
-		currentTime time.Time
+	// Instead of a custom wrapper, we'll directly use the Expirable cache
+	startTime := time.Date(2023, 1, 1, 12, 0, 0, 0, time.UTC)
+	var currentTime = startTime
+
+	cache := lru.MustNewExpirable[string, string](5, 1*time.Hour)
+
+	// Replace the timeNow function with our simulated time
+	cache.SetTimeNowFunc(func() time.Time {
+		return currentTime
+	})
+
+	// Function to advance our simulated time
+	advanceTime := func(duration time.Duration) {
+		currentTime = currentTime.Add(duration)
+		fmt.Printf("Time is now: %s\n", currentTime.Format(time.Kitchen))
 	}
 
-	simulateTime := func() *timedCache {
-		startTime := time.Date(2023, 1, 1, 12, 0, 0, 0, time.UTC)
-		cache := lru.MustNewExpirable[string, string](5, 1*time.Hour)
-
-		// Replace the timeNow function with our simulated time
-		tc := &timedCache{
-			Expirable:   cache,
-			currentTime: startTime,
-		}
-		tc.Expirable.SetTimeNowFunc(func() time.Time {
-			return tc.currentTime
-		})
-
-		return tc
-	}
-
-	advanceTime := func(tc *timedCache, duration time.Duration) {
-		tc.currentTime = tc.currentTime.Add(duration)
-		fmt.Printf("Time is now: %s\n", tc.currentTime.Format(time.Kitchen))
-	}
-
-	// Create our simulated cache
-	tc := simulateTime()
-	fmt.Printf("Time is now: %s\n", tc.currentTime.Format(time.Kitchen))
+	// Start the example
+	fmt.Printf("Time is now: %s\n", currentTime.Format(time.Kitchen))
 
 	// Add items to the cache
-	tc.Set("key1", "value1")
-	tc.Set("key2", "value2")
+	cache.Set("key1", "value1")
+	cache.Set("key2", "value2")
 
 	// Check TTLs
-	_, ttl1, _ := tc.GetWithTTL("key1")
-	_, ttl2, _ := tc.GetWithTTL("key2")
+	_, ttl1, _ := cache.GetWithTTL("key1")
+	_, ttl2, _ := cache.GetWithTTL("key2")
 	fmt.Printf("key1 TTL: %s\n", ttl1.Round(time.Second))
 	fmt.Printf("key2 TTL: %s\n", ttl2.Round(time.Second))
 
 	// Advance time by 20 minutes
-	advanceTime(tc, 20*time.Minute)
+	advanceTime(20 * time.Minute)
 
 	// Check TTLs again - both should still be valid
-	_, ttl1, found1 := tc.GetWithTTL("key1")
-	_, ttl2, found2 := tc.GetWithTTL("key2")
+	_, ttl1, found1 := cache.GetWithTTL("key1")
+	_, ttl2, found2 := cache.GetWithTTL("key2")
 	fmt.Printf("key1 TTL: %s (exists: %t)\n", ttl1.Round(time.Second), found1)
 	fmt.Printf("key2 TTL: %s (exists: %t)\n", ttl2.Round(time.Second), found2)
 
 	// Advance time past the TTL
-	advanceTime(tc, 41*time.Minute) // Now at 1:01 PM (past the 1 hour TTL)
+	advanceTime(41 * time.Minute) // Now at 1:01 PM (past the 1 hour TTL)
 
 	// Both should be expired now
-	_, _, found1 = tc.GetWithTTL("key1")
-	_, _, found2 = tc.GetWithTTL("key2")
+	_, _, found1 = cache.GetWithTTL("key1")
+	_, _, found2 = cache.GetWithTTL("key2")
 	fmt.Printf("key1 exists: %t\n", found1)
 	fmt.Printf("key2 exists: %t\n", found2)
 
 	// Remove expired entries
-	removed := tc.RemoveExpired()
+	removed := cache.RemoveExpired()
 	fmt.Printf("Removed %d expired entries\n", removed)
 
 	// Output:
@@ -171,17 +160,17 @@ func Example_expirableEvictionCallback() {
 	// Create a timer simulation function for testing
 	createTimedCache := func() (*lru.Expirable[string, int], func(time.Duration)) {
 		cache := lru.MustNewExpirable[string, int](3, time.Minute)
-		
+
 		var mutex sync.Mutex
 		simulatedTime := time.Now()
-		
+
 		// Set the time function
 		cache.SetTimeNowFunc(func() time.Time {
 			mutex.Lock()
 			defer mutex.Unlock()
 			return simulatedTime
 		})
-		
+
 		// Create a function to advance time
 		advanceTime := func(duration time.Duration) {
 			mutex.Lock()
@@ -189,45 +178,45 @@ func Example_expirableEvictionCallback() {
 			simulatedTime = simulatedTime.Add(duration)
 			fmt.Printf("Time advanced by %v\n", duration)
 		}
-		
+
 		return cache, advanceTime
 	}
-	
+
 	// Create our cache and time advancement function
 	cache, advanceTime := createTimedCache()
-	
+
 	// Set up eviction tracking
 	evictedItems := make(map[string]int)
 	cache.OnEvict(func(key string, value int) {
 		evictedItems[key] = value
 		fmt.Printf("Evicted: %s=%d\n", key, value)
 	})
-	
+
 	// Add items to the cache
 	cache.Set("a", 1)
 	cache.Set("b", 2)
 	cache.Set("c", 3)
-	
+
 	// This should evict the least recently used item (a)
 	cache.Set("d", 4)
 	fmt.Printf("After capacity eviction: %v\n", cache.Keys())
-	
+
 	// Advance time to expire all items
 	advanceTime(time.Minute + time.Second)
-	
+
 	// Expired items won't be automatically removed until a write operation
 	fmt.Printf("After time advance, items still in cache (lazy): %v\n", cache.Keys())
-	
+
 	// Explicit removal of expired items will trigger callbacks
 	removed := cache.RemoveExpired()
 	fmt.Printf("Items removed by RemoveExpired: %d\n", removed)
-	
+
 	// Add a new item after expiration
 	cache.Set("e", 5)
-	
+
 	// Print all evicted items
 	fmt.Printf("Total evicted items: %d\n", len(evictedItems))
-	
+
 	// Output:
 	// Evicted: a=1
 	// After capacity eviction: [d c b]
