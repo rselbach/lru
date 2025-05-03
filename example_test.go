@@ -116,3 +116,46 @@ func Example_eviction() {
 	// After adding C: [C A]
 	// Contains B? false
 }
+
+// This example demonstrates using the eviction callback to track which items are evicted from the cache.
+func Example_evictionCallback() {
+	// Create a cache with a small capacity
+	cache := lru.MustNew[string, int](3)
+	
+	// Keep track of evicted items
+	evictedKeys := make([]string, 0)
+	evictedValues := make([]int, 0)
+	
+	// Set the eviction callback
+	cache.OnEvict(func(key string, value int) {
+		evictedKeys = append(evictedKeys, key)
+		evictedValues = append(evictedValues, value)
+		fmt.Printf("Evicted: %s=%d\n", key, value)
+	})
+	
+	// Fill the cache to capacity
+	cache.Set("a", 1)
+	cache.Set("b", 2)
+	cache.Set("c", 3)
+	
+	// Adding a fourth item will evict the least recently used one (a)
+	cache.Set("d", 4)
+	
+	// Explicitly remove an item
+	cache.Remove("b")
+	
+	// Clear the cache - this will evict all remaining items
+	cache.Clear()
+	
+	// Print all evicted items in the order they were evicted
+	fmt.Printf("All evicted keys: %v\n", evictedKeys)
+	fmt.Printf("All evicted values: %v\n", evictedValues)
+	
+	// Output:
+	// Evicted: a=1
+	// Evicted: b=2
+	// Evicted: d=4
+	// Evicted: c=3
+	// All evicted keys: [a b d c]
+	// All evicted values: [1 2 4 3]
+}

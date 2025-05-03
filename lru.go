@@ -13,12 +13,16 @@ var (
 	ErrNilValue    = errors.New("nil value not allowed")
 )
 
+// OnEvictFunc is a function that is called when an entry is evicted from the cache.
+type OnEvictFunc[K comparable, V any] func(key K, value V)
+
 // Cache represents a thread-safe, fixed-size LRU cache.
 type Cache[K comparable, V any] struct {
 	capacity int
 	items    map[K]*list.Element
 	lruList  *list.List
 	mu       sync.RWMutex
+	onEvict  OnEvictFunc[K, V] // callback for evictions
 }
 
 // cacheEntry is an internal representation of a cache entry.
@@ -131,6 +135,10 @@ func (c *Cache[K, V]) setLocked(key K, value V) {
 		oldest := c.lruList.Back()
 		if oldest != nil {
 			entry := oldest.Value.(*cacheEntry[K, V])
+			// call eviction callback if set
+			if c.onEvict != nil {
+				c.onEvict(entry.key, entry.val)
+			}
 			delete(c.items, entry.key)
 			c.lruList.Remove(oldest)
 		}
@@ -156,6 +164,13 @@ func (c *Cache[K, V]) Remove(key K) bool {
 		return false
 	}
 
+	entry := element.Value.(*cacheEntry[K, V])
+	
+	// call eviction callback if set
+	if c.onEvict != nil {
+		c.onEvict(entry.key, entry.val)
+	}
+	
 	delete(c.items, key)
 	c.lruList.Remove(element)
 	return true
@@ -173,6 +188,14 @@ func (c *Cache[K, V]) Len() int {
 func (c *Cache[K, V]) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// call eviction callback for each item if set
+	if c.onEvict != nil {
+		for _, element := range c.items {
+			entry := element.Value.(*cacheEntry[K, V])
+			c.onEvict(entry.key, entry.val)
+		}
+	}
 
 	c.items = make(map[K]*list.Element)
 	c.lruList = list.New()
@@ -205,4 +228,13 @@ func (c *Cache[K, V]) Keys() []K {
 // Capacity returns the maximum capacity of the cache.
 func (c *Cache[K, V]) Capacity() int {
 	return c.capacity
+}
+
+// OnEvict sets a callback function that will be called when an entry is evicted from the cache.
+// The callback will receive the key and value of the evicted entry.
+func (c *Cache[K, V]) OnEvict(f OnEvictFunc[K, V]) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	
+	c.onEvict = f
 }

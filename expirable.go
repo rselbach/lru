@@ -23,6 +23,7 @@ type Expirable[K comparable, V any] struct {
 	mu       sync.RWMutex
 	ttl      time.Duration
 	timeNow  func() time.Time // for testing
+	onEvict  OnEvictFunc[K, V] // callback for evictions
 }
 
 // NewExpirable creates a new LRU cache with the given capacity and TTL.
@@ -186,6 +187,10 @@ func (c *Expirable[K, V]) setLocked(key K, value V) {
 		oldest := c.lruList.Back()
 		if oldest != nil {
 			entry := oldest.Value.(*expirableEntry[K, V])
+			// call eviction callback if set
+			if c.onEvict != nil {
+				c.onEvict(entry.key, entry.val)
+			}
 			delete(c.items, entry.key)
 			c.lruList.Remove(oldest)
 		}
@@ -215,6 +220,13 @@ func (c *Expirable[K, V]) Remove(key K) bool {
 		return false
 	}
 
+	entry := element.Value.(*expirableEntry[K, V])
+	
+	// call eviction callback if set
+	if c.onEvict != nil {
+		c.onEvict(entry.key, entry.val)
+	}
+	
 	delete(c.items, key)
 	c.lruList.Remove(element)
 	return true
@@ -243,6 +255,18 @@ func (c *Expirable[K, V]) Len() int {
 func (c *Expirable[K, V]) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// call eviction callback for each non-expired item if set
+	if c.onEvict != nil {
+		now := c.timeNow()
+		for _, element := range c.items {
+			entry := element.Value.(*expirableEntry[K, V])
+			// only call callback for non-expired entries
+			if !now.After(entry.expiry) {
+				c.onEvict(entry.key, entry.val)
+			}
+		}
+	}
 
 	c.items = make(map[K]*list.Element)
 	c.lruList = list.New()
@@ -314,32 +338,71 @@ func (c *Expirable[K, V]) SetTimeNowFunc(f func() time.Time) {
 	c.timeNow = f
 }
 
+// OnEvict sets a callback function that will be called when an entry is evicted from the cache.
+// The callback will receive the key and value of the evicted entry.
+// This includes both manual removals and automatic evictions due to capacity or expiry.
+func (c *Expirable[K, V]) OnEvict(f OnEvictFunc[K, V]) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	
+	c.onEvict = f
+}
+
 // removeExpiredLocked removes all expired items from the cache.
 // it assumes the mutex is already locked.
 func (c *Expirable[K, V]) removeExpiredLocked() {
 	now := c.timeNow()
 
-	var nextElement *list.Element
-	for element := c.lruList.Front(); element != nil; element = nextElement {
-		nextElement = element.Next() // save next element before potentially removing current one
+	for element := c.lruList.Front(); element != nil; {
+		nextElement := element.Next() // save next element before potentially removing current one
 
 		entry := element.Value.(*expirableEntry[K, V])
 		if now.After(entry.expiry) {
+			// we choose NOT to call callback for expired items in lazy cleanup
+			// as they are automatically evicted by time, not by user action
 			delete(c.items, entry.key)
 			c.lruList.Remove(element)
 		}
+		
+		element = nextElement
 	}
 }
 
 // RemoveExpired explicitly removes all expired items from the cache.
 // Returns the number of items removed.
+// This method will call the eviction callback for each expired item if one is set.
 func (c *Expirable[K, V]) RemoveExpired() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	beforeCount := len(c.items)
-	c.removeExpiredLocked()
-	afterCount := len(c.items)
-
-	return beforeCount - afterCount
+	now := c.timeNow()
+	removed := 0
+	
+	// Count items to be removed
+	expiredItems := make([]K, 0)
+	expiredValues := make([]V, 0)
+	
+	for element := c.lruList.Front(); element != nil; {
+		nextElement := element.Next() // save next element before potentially removing current one
+		
+		entry := element.Value.(*expirableEntry[K, V])
+		if now.After(entry.expiry) {
+			expiredItems = append(expiredItems, entry.key)
+			expiredValues = append(expiredValues, entry.val)
+			delete(c.items, entry.key)
+			c.lruList.Remove(element)
+			removed++
+		}
+		
+		element = nextElement
+	}
+	
+	// Call eviction callbacks if set
+	if c.onEvict != nil {
+		for i := range expiredItems {
+			c.onEvict(expiredItems[i], expiredValues[i])
+		}
+	}
+	
+	return removed
 }

@@ -1,6 +1,6 @@
 # Generic LRU Cache for Go
 
-A thread-safe, generic Least Recently Used (LRU) cache implementation in Go, with optional time-to-live functionality.
+A thread-safe, generic Least Recently Used (LRU) cache implementation in Go, with optional time-to-live functionality and eviction callbacks.
 
 ## Features
 
@@ -11,6 +11,7 @@ A thread-safe, generic Least Recently Used (LRU) cache implementation in Go, wit
 - Automatic eviction of least recently used items when capacity is reached
 - Comprehensive API for common cache operations
 - Optional time-based expiry mechanism with configurable TTL
+- Eviction callbacks to notify when items are removed from the cache
 
 ## Installation
 
@@ -146,6 +147,47 @@ func main() {
 }
 ```
 
+### Using Eviction Callbacks
+
+```go
+package main
+
+import (
+	"fmt"
+	
+	"github.com/rselbach/lru"
+)
+
+func main() {
+	// Create a new cache with a capacity of 3 items
+	cache := lru.MustNew[string, int](3)
+	
+	// Set an eviction callback that will be called whenever an item is evicted
+	cache.OnEvict(func(key string, value int) {
+		fmt.Printf("Evicted from cache: %s=%d\n", key, value)
+	})
+	
+	// Add items to the cache
+	cache.Set("a", 1)
+	cache.Set("b", 2)
+	cache.Set("c", 3)
+	
+	// Adding a fourth item will evict the least recently used one (a)
+	cache.Set("d", 4)
+	// Output: Evicted from cache: a=1
+	
+	// Explicitly removing an item will also trigger the callback
+	cache.Remove("b")
+	// Output: Evicted from cache: b=2
+	
+	// Clearing the cache will call the callback for all remaining items
+	cache.Clear()
+	// Output: 
+	// Evicted from cache: c=3
+	// Evicted from cache: d=4
+}
+```
+
 ## API
 
 ### Creating a cache
@@ -187,6 +229,7 @@ cache := lru.MustNewExpirable[KeyType, ValueType](capacity, ttl)
 - `Capacity() int` - Get the maximum capacity of the cache
 - `Clear()` - Remove all items from the cache
 - `Keys() []K` - Get all keys in the cache (ordered by most to least recently used)
+- `OnEvict(func(key K, value V))` - Set a callback function to be called when items are evicted
 
 ### Expirable Cache additional operations
 
@@ -194,6 +237,7 @@ cache := lru.MustNewExpirable[KeyType, ValueType](capacity, ttl)
 - `TTL() time.Duration` - Get the time-to-live duration for cache entries
 - `SetTTL(ttl time.Duration) error` - Update the TTL for future cache entries
 - `RemoveExpired() int` - Explicitly remove all expired entries
+- `OnEvict(func(key K, value V))` - Set a callback function to be called when items are evicted
 
 ## Thread Safety
 

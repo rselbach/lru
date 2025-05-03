@@ -165,3 +165,77 @@ func Example_lruAndExpiration() {
 	// After adding C: [C A]
 	// After adding D: [D]
 }
+
+// This example demonstrates using eviction callbacks with the Expirable cache.
+func Example_expirableEvictionCallback() {
+	// Create a timer simulation function for testing
+	createTimedCache := func() (*lru.Expirable[string, int], func(time.Duration)) {
+		cache := lru.MustNewExpirable[string, int](3, time.Minute)
+		
+		var mutex sync.Mutex
+		simulatedTime := time.Now()
+		
+		// Set the time function
+		cache.SetTimeNowFunc(func() time.Time {
+			mutex.Lock()
+			defer mutex.Unlock()
+			return simulatedTime
+		})
+		
+		// Create a function to advance time
+		advanceTime := func(duration time.Duration) {
+			mutex.Lock()
+			defer mutex.Unlock()
+			simulatedTime = simulatedTime.Add(duration)
+			fmt.Printf("Time advanced by %v\n", duration)
+		}
+		
+		return cache, advanceTime
+	}
+	
+	// Create our cache and time advancement function
+	cache, advanceTime := createTimedCache()
+	
+	// Set up eviction tracking
+	evictedItems := make(map[string]int)
+	cache.OnEvict(func(key string, value int) {
+		evictedItems[key] = value
+		fmt.Printf("Evicted: %s=%d\n", key, value)
+	})
+	
+	// Add items to the cache
+	cache.Set("a", 1)
+	cache.Set("b", 2)
+	cache.Set("c", 3)
+	
+	// This should evict the least recently used item (a)
+	cache.Set("d", 4)
+	fmt.Printf("After capacity eviction: %v\n", cache.Keys())
+	
+	// Advance time to expire all items
+	advanceTime(time.Minute + time.Second)
+	
+	// Expired items won't be automatically removed until a write operation
+	fmt.Printf("After time advance, items still in cache (lazy): %v\n", cache.Keys())
+	
+	// Explicit removal of expired items will trigger callbacks
+	removed := cache.RemoveExpired()
+	fmt.Printf("Items removed by RemoveExpired: %d\n", removed)
+	
+	// Add a new item after expiration
+	cache.Set("e", 5)
+	
+	// Print all evicted items
+	fmt.Printf("Total evicted items: %d\n", len(evictedItems))
+	
+	// Output:
+	// Evicted: a=1
+	// After capacity eviction: [d c b]
+	// Time advanced by 1m1s
+	// After time advance, items still in cache (lazy): []
+	// Evicted: d=4
+	// Evicted: c=3
+	// Evicted: b=2
+	// Items removed by RemoveExpired: 3
+	// Total evicted items: 4
+}
