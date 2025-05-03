@@ -1,6 +1,6 @@
 # Generic LRU Cache for Go
 
-A thread-safe, generic Least Recently Used (LRU) cache implementation in Go.
+A thread-safe, generic Least Recently Used (LRU) cache implementation in Go, with optional time-to-live functionality.
 
 ## Features
 
@@ -10,6 +10,7 @@ A thread-safe, generic Least Recently Used (LRU) cache implementation in Go.
 - Configurable capacity
 - Automatic eviction of least recently used items when capacity is reached
 - Comprehensive API for common cache operations
+- Optional time-based expiry mechanism with configurable TTL
 
 ## Installation
 
@@ -19,7 +20,7 @@ go get github.com/rselbach/lru
 
 ## Usage
 
-### Basic usage
+### Basic LRU Cache Usage
 
 ```go
 package main
@@ -101,9 +102,55 @@ func main() {
 }
 ```
 
+### Using Expirable Cache with TTL
+
+```go
+package main
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/rselbach/lru"
+)
+
+func main() {
+	// Create a new expirable cache with a capacity of 3 items and 1 minute TTL
+	cache := lru.MustNewExpirable[string, int](3, time.Minute)
+
+	// Add items to the cache
+	cache.Set("one", 1)
+	cache.Set("two", 2)
+	cache.Set("three", 3)
+	
+	// Get an item and check its remaining TTL
+	value, ttl, found := cache.GetWithTTL("two")
+	if found {
+		fmt.Printf("Value: %d, TTL: %v\n", value, ttl)
+	}
+	
+	// Wait for all items to expire
+	fmt.Println("Waiting for items to expire...")
+	time.Sleep(61 * time.Second)
+	
+	// All items should be expired now
+	if !cache.Contains("one") && !cache.Contains("two") && !cache.Contains("three") {
+		fmt.Println("All items have expired")
+	}
+	
+	// Add a new item
+	cache.Set("four", 4)
+	
+	// Now only the new item is in the cache
+	fmt.Printf("Items in cache: %v\n", cache.Keys())
+}
+```
+
 ## API
 
 ### Creating a cache
+
+#### Standard LRU cache
 
 ```go
 // Create a new cache with error handling
@@ -116,7 +163,20 @@ if err != nil {
 cache := lru.MustNew[KeyType, ValueType](capacity)
 ```
 
-### Cache operations
+#### Expirable LRU cache with TTL
+
+```go
+// Create a new expirable cache with error handling
+cache, err := lru.NewExpirable[KeyType, ValueType](capacity, ttl)
+if err != nil {
+    // handle error
+}
+
+// Create a new expirable cache, panic if capacity or TTL is invalid
+cache := lru.MustNewExpirable[KeyType, ValueType](capacity, ttl)
+```
+
+### Standard Cache operations
 
 - `Get(key K) (V, bool)` - Get a value from the cache
 - `Set(key K, value V)` - Add or update a value in the cache
@@ -127,6 +187,13 @@ cache := lru.MustNew[KeyType, ValueType](capacity)
 - `Capacity() int` - Get the maximum capacity of the cache
 - `Clear()` - Remove all items from the cache
 - `Keys() []K` - Get all keys in the cache (ordered by most to least recently used)
+
+### Expirable Cache additional operations
+
+- `GetWithTTL(key K) (V, time.Duration, bool)` - Get a value and its remaining TTL
+- `TTL() time.Duration` - Get the time-to-live duration for cache entries
+- `SetTTL(ttl time.Duration) error` - Update the TTL for future cache entries
+- `RemoveExpired() int` - Explicitly remove all expired entries
 
 ## Thread Safety
 
