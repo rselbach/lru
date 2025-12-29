@@ -60,8 +60,8 @@ func MustNewExpirable[K comparable, V any](capacity int, ttl time.Duration) *Exp
 // It returns the value and a boolean indicating whether the key was found and not expired.
 // This method also updates the item's position in the LRU list.
 func (c *Expirable[K, V]) Get(key K) (V, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	var zero V
 
@@ -74,8 +74,6 @@ func (c *Expirable[K, V]) Get(key K) (V, bool) {
 
 	// check if the entry has expired
 	if c.timeNow().After(entry.expiry) {
-		// don't remove now because we hold a read lock
-		// it will be lazily removed on next write operation or get
 		return zero, false
 	}
 
@@ -88,8 +86,8 @@ func (c *Expirable[K, V]) Get(key K) (V, bool) {
 // GetWithTTL retrieves a value and its remaining TTL from the cache by key.
 // It returns the value, remaining TTL, and a boolean indicating whether the key was found and not expired.
 func (c *Expirable[K, V]) GetWithTTL(key K) (V, time.Duration, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	var zero V
 
