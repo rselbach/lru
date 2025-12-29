@@ -310,6 +310,8 @@ func (c *Expirable[K, V]) Capacity() int {
 
 // TTL returns the time-to-live duration for cache entries.
 func (c *Expirable[K, V]) TTL() time.Duration {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.ttl
 }
 

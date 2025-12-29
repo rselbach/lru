@@ -189,9 +189,9 @@ func (c *Cache[K, V]) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// call eviction callback for each item if set
+	// call eviction callback for each item if set (iterate list for deterministic order)
 	if c.onEvict != nil {
-		for _, element := range c.items {
+		for element := c.lruList.Front(); element != nil; element = element.Next() {
 			entry := element.Value.(*cacheEntry[K, V])
 			c.onEvict(entry.key, entry.val)
 		}
