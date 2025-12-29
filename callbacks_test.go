@@ -116,12 +116,12 @@ func TestExpirable_OnEvict(t *testing.T) {
 	// Advance time past expiration
 	mockClock.Add(time.Minute + time.Second)
 
-	// The expired items won't be automatically evicted until a write operation
+	// The expired items won't be evicted until accessed or a write operation
 	r.Equal(map[string]int{"a": 1, "b": 2}, evicted)
 
-	// This should not call the callback for expired items removed implicitly
+	// This should call the callback for expired items removed during Set
 	cache.Set("e", 5)
-	r.Equal(map[string]int{"a": 1, "b": 2}, evicted)
+	r.Equal(map[string]int{"a": 1, "b": 2, "c": 3, "d": 4}, evicted)
 
 	// Add new items to test RemoveExpired with callbacks
 	evicted = make(map[string]int) // Reset the eviction map

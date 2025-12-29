@@ -83,12 +83,13 @@ func Example_getWithTTL() {
 	advanceTime(41 * time.Minute) // Now at 1:01 PM (past the 1 hour TTL)
 
 	// Both should be expired now
+	// Note: accessing expired items now removes them automatically
 	_, _, found1 = cache.GetWithTTL("key1")
 	_, _, found2 = cache.GetWithTTL("key2")
 	fmt.Printf("key1 exists: %t\n", found1)
 	fmt.Printf("key2 exists: %t\n", found2)
 
-	// Remove expired entries
+	// Items were already removed by the Get calls above
 	removed := cache.RemoveExpired()
 	fmt.Printf("Removed %d expired entries\n", removed)
 
@@ -102,7 +103,7 @@ func Example_getWithTTL() {
 	// Time is now: 1:01PM
 	// key1 exists: false
 	// key2 exists: false
-	// Removed 2 expired entries
+	// Removed 0 expired entries
 }
 
 // This example demonstrates cache eviction based on both LRU and expiration.
