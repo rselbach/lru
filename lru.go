@@ -95,17 +95,22 @@ func (c *Cache[K, V]) GetOrSet(key K, compute func() (V, error)) (V, error) {
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	// check again in case it was added while we were computing
 	if element, found := c.items[key]; found {
 		c.lruList.MoveToFront(element)
 		entry := element.Value.(*cacheEntry[K, V])
+		c.mu.Unlock()
 		return entry.val, nil
 	}
 
 	// add to cache
-	c.setLocked(key, val)
+	evictedKey, evictedVal, hasEvicted := c.setLocked(key, val)
+	onEvict := c.onEvict
+	c.mu.Unlock()
+
+	if hasEvicted && onEvict != nil {
+		onEvict(evictedKey, evictedVal)
+	}
 	return val, nil
 }
 
@@ -113,15 +118,24 @@ func (c *Cache[K, V]) GetOrSet(key K, compute func() (V, error)) (V, error) {
 // If the key already exists, its value is updated.
 // If the cache is at capacity, the least recently used item is evicted.
 func (c *Cache[K, V]) Set(key K, value V) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	var evictedKey K
+	var evictedVal V
+	var hasEvicted bool
 
-	c.setLocked(key, value)
+	c.mu.Lock()
+	evictedKey, evictedVal, hasEvicted = c.setLocked(key, value)
+	onEvict := c.onEvict
+	c.mu.Unlock()
+
+	if hasEvicted && onEvict != nil {
+		onEvict(evictedKey, evictedVal)
+	}
 }
 
 // setLocked is an internal method that adds or updates an item in the cache.
 // it assumes the mutex is already locked.
-func (c *Cache[K, V]) setLocked(key K, value V) {
+// Returns the evicted key/value and whether an eviction occurred.
+func (c *Cache[K, V]) setLocked(key K, value V) (evictedKey K, evictedVal V, evicted bool) {
 	// if key exists, update value and move to front
 	if element, found := c.items[key]; found {
 		c.lruList.MoveToFront(element)
@@ -135,10 +149,9 @@ func (c *Cache[K, V]) setLocked(key K, value V) {
 		oldest := c.lruList.Back()
 		if oldest != nil {
 			entry := oldest.Value.(*cacheEntry[K, V])
-			// call eviction callback if set
-			if c.onEvict != nil {
-				c.onEvict(entry.key, entry.val)
-			}
+			evictedKey = entry.key
+			evictedVal = entry.val
+			evicted = true
 			delete(c.items, entry.key)
 			c.lruList.Remove(oldest)
 		}
@@ -151,28 +164,31 @@ func (c *Cache[K, V]) setLocked(key K, value V) {
 	}
 	element := c.lruList.PushFront(entry)
 	c.items[key] = element
+	return
 }
 
 // Remove deletes an item from the cache by key.
 // It returns whether the key was found and removed.
 func (c *Cache[K, V]) Remove(key K) bool {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	element, found := c.items[key]
 	if !found {
+		c.mu.Unlock()
 		return false
 	}
 
 	entry := element.Value.(*cacheEntry[K, V])
-
-	// call eviction callback if set
-	if c.onEvict != nil {
-		c.onEvict(entry.key, entry.val)
-	}
+	evictedKey := entry.key
+	evictedVal := entry.val
+	onEvict := c.onEvict
 
 	delete(c.items, key)
 	c.lruList.Remove(element)
+	c.mu.Unlock()
+
+	if onEvict != nil {
+		onEvict(evictedKey, evictedVal)
+	}
 	return true
 }
 
@@ -187,18 +203,24 @@ func (c *Cache[K, V]) Len() int {
 // Clear removes all items from the cache.
 func (c *Cache[K, V]) Clear() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	onEvict := c.onEvict
 
-	// call eviction callback for each item if set (iterate list for deterministic order)
-	if c.onEvict != nil {
+	var evicted []cacheEntry[K, V]
+	if onEvict != nil {
+		evicted = make([]cacheEntry[K, V], 0, c.lruList.Len())
 		for element := c.lruList.Front(); element != nil; element = element.Next() {
 			entry := element.Value.(*cacheEntry[K, V])
-			c.onEvict(entry.key, entry.val)
+			evicted = append(evicted, *entry)
 		}
 	}
 
 	c.items = make(map[K]*list.Element)
 	c.lruList = list.New()
+	c.mu.Unlock()
+
+	for _, entry := range evicted {
+		onEvict(entry.key, entry.val)
+	}
 }
 
 // Contains checks if a key exists in the cache.
