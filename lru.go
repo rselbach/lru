@@ -59,8 +59,8 @@ func MustNew[K comparable, V any](capacity int) *Cache[K, V] {
 // It returns the value and a boolean indicating whether the key was found.
 // This method also updates the item's position in the LRU list.
 func (c *Cache[K, V]) Get(key K) (V, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	var zero V
 
