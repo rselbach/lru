@@ -1,7 +1,6 @@
 package lru
 
 import (
-	"container/list"
 	"errors"
 	"sync"
 )
@@ -18,16 +17,19 @@ type OnEvictFunc[K comparable, V any] func(key K, value V)
 // Cache represents a thread-safe, fixed-size LRU cache.
 type Cache[K comparable, V any] struct {
 	capacity int
-	items    map[K]*list.Element
-	lruList  *list.List
+	items    map[K]*entry[K, V]
+	head     *entry[K, V] // most recently used
+	tail     *entry[K, V] // least recently used
 	mu       sync.RWMutex
 	onEvict  OnEvictFunc[K, V] // callback for evictions
 }
 
-// cacheEntry is an internal representation of a cache entry.
-type cacheEntry[K comparable, V any] struct {
-	key K
-	val V
+// entry is an intrusive doubly-linked list node.
+type entry[K comparable, V any] struct {
+	key  K
+	val  V
+	prev *entry[K, V]
+	next *entry[K, V]
 }
 
 // New creates a new LRU cache with the given capacity.
@@ -39,8 +41,7 @@ func New[K comparable, V any](capacity int) (*Cache[K, V], error) {
 
 	return &Cache[K, V]{
 		capacity: capacity,
-		items:    make(map[K]*list.Element),
-		lruList:  list.New(),
+		items:    make(map[K]*entry[K, V], capacity),
 	}, nil
 }
 
@@ -59,20 +60,37 @@ func MustNew[K comparable, V any](capacity int) *Cache[K, V] {
 // This method also updates the item's position in the LRU list.
 func (c *Cache[K, V]) Get(key K) (V, bool) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	var zero V
 
-	element, found := c.items[key]
+	e, found := c.items[key]
+	if !found {
+		c.mu.Unlock()
+		return zero, false
+	}
+
+	c.moveToFront(e)
+	val := e.val
+	c.mu.Unlock()
+
+	return val, true
+}
+
+// Peek retrieves a value from the cache by key without updating its position
+// in the LRU list. This is useful for checking a value without affecting
+// eviction order. Returns the value and a boolean indicating whether the key was found.
+func (c *Cache[K, V]) Peek(key K) (V, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	var zero V
+
+	e, found := c.items[key]
 	if !found {
 		return zero, false
 	}
 
-	// move to front of list to mark as recently used
-	c.lruList.MoveToFront(element)
-	entry := element.Value.(*cacheEntry[K, V])
-
-	return entry.val, true
+	return e.val, true
 }
 
 // GetOrSet retrieves a value from the cache by key, or computes and sets it if not present.
@@ -95,11 +113,11 @@ func (c *Cache[K, V]) GetOrSet(key K, compute func() (V, error)) (V, error) {
 
 	c.mu.Lock()
 	// check again in case it was added while we were computing
-	if element, found := c.items[key]; found {
-		c.lruList.MoveToFront(element)
-		entry := element.Value.(*cacheEntry[K, V])
+	if e, found := c.items[key]; found {
+		c.moveToFront(e)
+		val := e.val
 		c.mu.Unlock()
-		return entry.val, nil
+		return val, nil
 	}
 
 	// add to cache
@@ -136,53 +154,88 @@ func (c *Cache[K, V]) Set(key K, value V) {
 // Returns the evicted key/value and whether an eviction occurred.
 func (c *Cache[K, V]) setLocked(key K, value V) (evictedKey K, evictedVal V, evicted bool) {
 	// if key exists, update value and move to front
-	if element, found := c.items[key]; found {
-		c.lruList.MoveToFront(element)
-		entry := element.Value.(*cacheEntry[K, V])
-		entry.val = value
+	if e, found := c.items[key]; found {
+		c.moveToFront(e)
+		e.val = value
 		return
 	}
 
 	// if we're at capacity, remove the least recently used item
-	if c.lruList.Len() >= c.capacity {
-		oldest := c.lruList.Back()
+	if len(c.items) >= c.capacity {
+		oldest := c.tail
 		if oldest != nil {
-			entry := oldest.Value.(*cacheEntry[K, V])
-			evictedKey = entry.key
-			evictedVal = entry.val
+			evictedKey = oldest.key
+			evictedVal = oldest.val
 			evicted = true
-			delete(c.items, entry.key)
-			c.lruList.Remove(oldest)
+			c.remove(oldest)
+			delete(c.items, oldest.key)
 		}
 	}
 
 	// add new item
-	entry := &cacheEntry[K, V]{
+	e := &entry[K, V]{
 		key: key,
 		val: value,
 	}
-	element := c.lruList.PushFront(entry)
-	c.items[key] = element
+	c.pushFront(e)
+	c.items[key] = e
 	return
+}
+
+// moveToFront moves an entry to the front of the list.
+func (c *Cache[K, V]) moveToFront(e *entry[K, V]) {
+	if c.head == e {
+		return
+	}
+	c.remove(e)
+	c.pushFront(e)
+}
+
+// pushFront adds an entry to the front of the list.
+func (c *Cache[K, V]) pushFront(e *entry[K, V]) {
+	e.prev = nil
+	e.next = c.head
+	if c.head != nil {
+		c.head.prev = e
+	}
+	c.head = e
+	if c.tail == nil {
+		c.tail = e
+	}
+}
+
+// remove removes an entry from the list.
+func (c *Cache[K, V]) remove(e *entry[K, V]) {
+	if e.prev != nil {
+		e.prev.next = e.next
+	} else {
+		c.head = e.next
+	}
+	if e.next != nil {
+		e.next.prev = e.prev
+	} else {
+		c.tail = e.prev
+	}
+	e.prev = nil
+	e.next = nil
 }
 
 // Remove deletes an item from the cache by key.
 // It returns whether the key was found and removed.
 func (c *Cache[K, V]) Remove(key K) bool {
 	c.mu.Lock()
-	element, found := c.items[key]
+	e, found := c.items[key]
 	if !found {
 		c.mu.Unlock()
 		return false
 	}
 
-	entry := element.Value.(*cacheEntry[K, V])
-	evictedKey := entry.key
-	evictedVal := entry.val
+	evictedKey := e.key
+	evictedVal := e.val
 	onEvict := c.onEvict
 
 	delete(c.items, key)
-	c.lruList.Remove(element)
+	c.remove(e)
 	c.mu.Unlock()
 
 	if onEvict != nil {
@@ -204,21 +257,21 @@ func (c *Cache[K, V]) Clear() {
 	c.mu.Lock()
 	onEvict := c.onEvict
 
-	var evicted []cacheEntry[K, V]
+	var evicted []entry[K, V]
 	if onEvict != nil {
-		evicted = make([]cacheEntry[K, V], 0, c.lruList.Len())
-		for element := c.lruList.Front(); element != nil; element = element.Next() {
-			entry := element.Value.(*cacheEntry[K, V])
-			evicted = append(evicted, *entry)
+		evicted = make([]entry[K, V], 0, len(c.items))
+		for e := c.head; e != nil; e = e.next {
+			evicted = append(evicted, *e)
 		}
 	}
 
-	c.items = make(map[K]*list.Element)
-	c.lruList = list.New()
+	c.items = make(map[K]*entry[K, V], c.capacity)
+	c.head = nil
+	c.tail = nil
 	c.mu.Unlock()
 
-	for _, entry := range evicted {
-		onEvict(entry.key, entry.val)
+	for _, e := range evicted {
+		onEvict(e.key, e.val)
 	}
 }
 
@@ -238,9 +291,8 @@ func (c *Cache[K, V]) Keys() []K {
 	defer c.mu.RUnlock()
 
 	keys := make([]K, 0, len(c.items))
-	for element := c.lruList.Front(); element != nil; element = element.Next() {
-		entry := element.Value.(*cacheEntry[K, V])
-		keys = append(keys, entry.key)
+	for e := c.head; e != nil; e = e.next {
+		keys = append(keys, e.key)
 	}
 
 	return keys

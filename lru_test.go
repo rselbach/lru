@@ -360,3 +360,28 @@ func TestCache_Keys(t *testing.T) {
 	_, _ = cache.Get("a")
 	r.Equal([]string{"a", "c", "b"}, cache.Keys())
 }
+
+func TestCache_Peek(t *testing.T) {
+	r := require.New(t)
+	cache := MustNew[string, int](5)
+
+	cache.Set("a", 1)
+	cache.Set("b", 2)
+	cache.Set("c", 3)
+
+	// peek should return value without affecting LRU order
+	val, found := cache.Peek("a")
+	r.True(found)
+	r.Equal(1, val)
+
+	// order should still be c, b, a (a was not moved to front)
+	r.Equal([]string{"c", "b", "a"}, cache.Keys())
+
+	// peek non-existent key
+	_, found = cache.Peek("z")
+	r.False(found)
+
+	// now use Get to move 'a' to front, then verify Peek didn't affect order before
+	_, _ = cache.Get("a")
+	r.Equal([]string{"a", "c", "b"}, cache.Keys())
+}

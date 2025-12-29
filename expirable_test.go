@@ -371,3 +371,43 @@ func TestExpirable_LRUEviction(t *testing.T) {
 	// Verify keys order (most recently used to least)
 	r.Equal([]string{"d", "a", "c"}, cache.Keys())
 }
+
+func TestExpirable_Peek(t *testing.T) {
+	r := require.New(t)
+	mockClock := newMockTime()
+
+	cache, err := NewExpirable[string, int](5, time.Minute)
+	r.NoError(err)
+	cache.timeNow = mockClock.Now
+
+	cache.Set("a", 1)
+	cache.Set("b", 2)
+	cache.Set("c", 3)
+
+	// peek should return value without affecting LRU order
+	val, found := cache.Peek("a")
+	r.True(found)
+	r.Equal(1, val)
+
+	// order should still be c, b, a (a was not moved to front)
+	r.Equal([]string{"c", "b", "a"}, cache.Keys())
+
+	// peek non-existent key
+	_, found = cache.Peek("z")
+	r.False(found)
+
+	// advance time past expiration
+	mockClock.Add(time.Minute + time.Second)
+
+	// peek should return not found for expired entry (but not remove it)
+	_, found = cache.Peek("a")
+	r.False(found)
+
+	// entry should still be in items map (not removed by Peek)
+	// we can verify by checking that Len() still counts it as 0 (expired)
+	r.Equal(0, cache.Len())
+
+	// but Get() should remove it
+	_, found = cache.Get("b")
+	r.False(found)
+}
