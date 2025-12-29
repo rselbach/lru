@@ -1,4 +1,3 @@
-// Package lru provides a generic, thread-safe LRU cache implementation.
 package lru
 
 import (

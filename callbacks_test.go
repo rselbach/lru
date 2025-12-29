@@ -90,7 +90,7 @@ func TestExpirable_OnEvict(t *testing.T) {
 	r.NoError(err)
 
 	// Override the timeNow function to use our mock
-	cache.SetTimeNowFunc(mockClock.Now)
+	cache.timeNow = mockClock.Now
 
 	evicted := make(map[string]int)
 	cache.OnEvict(func(key string, value int) {
@@ -145,7 +145,7 @@ func TestExpirable_Clear(t *testing.T) {
 	r.NoError(err)
 
 	// Override the timeNow function to use our mock
-	cache.SetTimeNowFunc(mockClock.Now)
+	cache.timeNow = mockClock.Now
 
 	evicted := make(map[string]int)
 	cache.OnEvict(func(key string, value int) {

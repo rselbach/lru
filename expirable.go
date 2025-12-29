@@ -1,4 +1,3 @@
-// Package lru provides a generic, thread-safe LRU cache implementation.
 package lru
 
 import (
@@ -392,15 +391,6 @@ func (c *Expirable[K, V]) SetTTL(ttl time.Duration) error {
 	return nil
 }
 
-// SetTimeNowFunc allows replacing the function used to get the current time.
-// This is primarily used for testing.
-func (c *Expirable[K, V]) SetTimeNowFunc(f func() time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.timeNow = f
-}
-
 // OnEvict sets a callback function that will be called when an entry is evicted from the cache.
 // The callback will receive the key and value of the evicted entry.
 // This includes both manual removals and automatic evictions due to capacity or expiry.
@@ -409,6 +399,18 @@ func (c *Expirable[K, V]) OnEvict(f OnEvictFunc[K, V]) {
 	defer c.mu.Unlock()
 
 	c.onEvict = f
+}
+
+// SetTimeNowFunc replaces the function used to get the current time.
+// This is primarily useful for testing. Passing nil resets to time.Now.
+func (c *Expirable[K, V]) SetTimeNowFunc(f func() time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if f == nil {
+		f = time.Now
+	}
+	c.timeNow = f
 }
 
 // removeExpiredLocked removes all expired items from the cache.
