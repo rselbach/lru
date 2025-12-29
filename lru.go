@@ -78,30 +78,30 @@ func (c *Cache[K, V]) Get(key K) (V, bool) {
 
 // GetOrSet retrieves a value from the cache by key, or computes and sets it if not present.
 // The compute function is only called if the key is not present in the cache.
+// Note: if multiple goroutines call GetOrSet concurrently for the same missing key,
+// compute may be called multiple times but only one result will be cached.
 func (c *Cache[K, V]) GetOrSet(key K, compute func() (V, error)) (V, error) {
 	// first try to get the item without a write lock
 	if val, found := c.Get(key); found {
 		return val, nil
 	}
 
-	// item not in cache, need to compute it
+	// compute the value outside the lock to avoid deadlock if compute
+	// calls back into the cache
+	val, err := compute()
+	if err != nil {
+		var zero V
+		return zero, err
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// check again in case it was added between the Get and acquiring the write lock
+	// check again in case it was added while we were computing
 	if element, found := c.items[key]; found {
 		c.lruList.MoveToFront(element)
 		entry := element.Value.(*cacheEntry[K, V])
 		return entry.val, nil
-	}
-
-	// compute the value
-	val, err := compute()
-
-	// don't add to cache if computation failed
-	if err != nil {
-		var zero V
-		return zero, err
 	}
 
 	// add to cache
