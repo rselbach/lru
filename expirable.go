@@ -90,9 +90,10 @@ func (c *Expirable[K, V]) Get(key K) (V, bool) {
 
 	// move to front of list to mark as recently used
 	c.lruList.MoveToFront(element)
+	val := entry.val
 	c.mu.Unlock()
 
-	return entry.val, true
+	return val, true
 }
 
 // GetWithTTL retrieves a value and its remaining TTL from the cache by key.
@@ -135,9 +136,10 @@ func (c *Expirable[K, V]) GetWithTTL(key K) (V, time.Duration, bool) {
 	if ttl < 0 {
 		ttl = 0
 	}
+	val := entry.val
 	c.mu.Unlock()
 
-	return entry.val, ttl, true
+	return val, ttl, true
 }
 
 // GetOrSet retrieves a value from the cache by key, or computes and sets it if not present or expired.
@@ -166,8 +168,9 @@ func (c *Expirable[K, V]) GetOrSet(key K, compute func() (V, error)) (V, error) 
 		entry := element.Value.(*expirableEntry[K, V])
 		if !c.timeNow().After(entry.expiry) {
 			c.lruList.MoveToFront(element)
+			val := entry.val
 			c.mu.Unlock()
-			return entry.val, nil
+			return val, nil
 		}
 		// expired entry, remove it and save for callback
 		expiredEntry = entry
