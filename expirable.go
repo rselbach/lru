@@ -118,17 +118,26 @@ func (c *Expirable[K, V]) GetWithTTL(key K) (V, time.Duration, bool) {
 
 // GetOrSet retrieves a value from the cache by key, or computes and sets it if not present or expired.
 // The compute function is only called if the key is not present in the cache or is expired.
+// Note: if multiple goroutines call GetOrSet concurrently for the same missing/expired key,
+// compute may be called multiple times but only one result will be cached.
 func (c *Expirable[K, V]) GetOrSet(key K, compute func() (V, error)) (V, error) {
 	// first try to get the item without a write lock
 	if val, found := c.Get(key); found {
 		return val, nil
 	}
 
-	// item not in cache or expired, need to compute it
+	// compute the value outside the lock to avoid deadlock if compute
+	// calls back into the cache
+	val, err := compute()
+	if err != nil {
+		var zero V
+		return zero, err
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// check again in case it was added between the Get and acquiring the write lock
+	// check again in case it was added while we were computing
 	element, found := c.items[key]
 	if found {
 		entry := element.Value.(*expirableEntry[K, V])
@@ -141,16 +150,7 @@ func (c *Expirable[K, V]) GetOrSet(key K, compute func() (V, error)) (V, error) 
 		c.lruList.Remove(element)
 	}
 
-	// compute the value
-	val, err := compute()
-
-	// don't add to cache if computation failed
-	if err != nil {
-		var zero V
-		return zero, err
-	}
-
-	// add to cache (no need to remove expired items here - we just did that above)
+	// add to cache
 	c.setLocked(key, val)
 	return val, nil
 }
