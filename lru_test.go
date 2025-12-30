@@ -2,6 +2,8 @@ package lru
 
 import (
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -384,4 +386,68 @@ func TestCache_Peek(t *testing.T) {
 	// now use Get to move 'a' to front, then verify Peek didn't affect order before
 	_, _ = cache.Get("a")
 	r.Equal([]string{"a", "c", "b"}, cache.Keys())
+}
+
+func TestCache_GetOrSetSingleflight(t *testing.T) {
+	r := require.New(t)
+	cache := MustNew[string, int](5)
+
+	// basic functionality: compute is called when key doesn't exist
+	var computeCount atomic.Int32
+	val, err := cache.GetOrSetSingleflight("a", func() (int, error) {
+		computeCount.Add(1)
+		return 42, nil
+	})
+	r.NoError(err)
+	r.Equal(42, val)
+	r.Equal(int32(1), computeCount.Load())
+
+	// second call should use cached value, compute not called
+	val, err = cache.GetOrSetSingleflight("a", func() (int, error) {
+		computeCount.Add(1)
+		return 99, nil
+	})
+	r.NoError(err)
+	r.Equal(42, val)
+	r.Equal(int32(1), computeCount.Load())
+
+	// error case
+	_, err = cache.GetOrSetSingleflight("error", func() (int, error) {
+		return 0, fmt.Errorf("compute error")
+	})
+	r.Error(err)
+	r.False(cache.Contains("error"))
+}
+
+func TestCache_GetOrSetSingleflight_Concurrent(t *testing.T) {
+	r := require.New(t)
+	cache := MustNew[string, int](5)
+
+	const goroutines = 100
+	var computeCount atomic.Int32
+	var wg sync.WaitGroup
+	results := make([]int, goroutines)
+
+	// all goroutines try to get the same key concurrently
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			val, err := cache.GetOrSetSingleflight("shared", func() (int, error) {
+				computeCount.Add(1)
+				return 42, nil
+			})
+			r.NoError(err)
+			results[idx] = val
+		}(i)
+	}
+	wg.Wait()
+
+	// compute should have been called exactly once
+	r.Equal(int32(1), computeCount.Load(), "compute should be called exactly once")
+
+	// all results should be the same
+	for i, result := range results {
+		r.Equal(42, result, "goroutine %d got wrong result", i)
+	}
 }

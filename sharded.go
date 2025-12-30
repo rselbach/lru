@@ -14,6 +14,8 @@ const DefaultShardCount = 16
 // It distributes keys across multiple Cache instances to reduce lock contention
 // under high concurrency. Each shard is an independent LRU cache with its own lock,
 // allowing concurrent operations on different shards.
+// A Sharded must be created with [NewSharded], [MustNewSharded], [NewShardedWithCount],
+// or [MustNewShardedWithCount]; the zero value is not ready for use.
 type Sharded[K comparable, V any] struct {
 	shards   []*Cache[K, V]
 	seed     maphash.Seed
@@ -48,14 +50,14 @@ func NewShardedWithCount[K comparable, V any](capacity, shardCount int) (*Sharde
 		return nil, errors.New("shard count must be greater than zero")
 	}
 
+	// clamp shard count to capacity so each shard has at least 1 slot
+	if shardCount > capacity {
+		shardCount = capacity
+	}
+
 	// distribute capacity evenly, with remainder going to first shards
 	perShard := capacity / shardCount
 	remainder := capacity % shardCount
-	if perShard < 1 {
-		// each shard needs at least capacity 1, so we'll exceed requested capacity
-		perShard = 1
-		remainder = 0
-	}
 
 	shards := make([]*Cache[K, V], shardCount)
 	for i := range shards {
@@ -151,6 +153,17 @@ func (s *Sharded[K, V]) GetOrSet(key K, compute func() (V, error)) (V, error) {
 	return s.getShard(key).GetOrSet(key, compute)
 }
 
+// GetOrSetSingleflight retrieves a value from the cache by key, or computes and sets it if not present.
+// Unlike [Sharded.GetOrSet], if multiple goroutines call GetOrSetSingleflight concurrently for the same
+// missing key, the compute function is called exactly once and all callers receive the same result.
+// This is useful when the compute function is expensive (e.g., database queries, API calls).
+//
+// The singleflight deduplication only applies to concurrent in-flight calls; once a value is cached,
+// subsequent calls return the cached value without invoking singleflight.
+func (s *Sharded[K, V]) GetOrSetSingleflight(key K, compute func() (V, error)) (V, error) {
+	return s.getShard(key).GetOrSetSingleflight(key, compute)
+}
+
 // Set adds or updates an item in the cache.
 // If the key already exists, its value is updated.
 // If the shard is at capacity, the least recently used item in that shard is evicted.
@@ -165,6 +178,7 @@ func (s *Sharded[K, V]) Remove(key K) bool {
 }
 
 // Len returns the current number of items in the cache across all shards.
+// The result is a point-in-time snapshot and may not reflect concurrent updates.
 func (s *Sharded[K, V]) Len() int {
 	total := 0
 	for _, shard := range s.shards {
@@ -189,6 +203,9 @@ func (s *Sharded[K, V]) Contains(key K) bool {
 // The order is from most recently used to least recently used within each shard,
 // with shards processed in order. Note that the global LRU order is not preserved
 // across shards.
+//
+// The result is a point-in-time snapshot and is not atomic with respect to
+// concurrent updates.
 func (s *Sharded[K, V]) Keys() []K {
 	keys := make([]K, 0, s.Len())
 	for _, shard := range s.shards {
@@ -209,6 +226,9 @@ func (s *Sharded[K, V]) ShardCount() int {
 
 // OnEvict sets a callback function that will be called when an entry is evicted
 // from any shard. The callback will receive the key and value of the evicted entry.
+//
+// Warning: The callback may be invoked concurrently from multiple shards.
+// Ensure the callback is safe for concurrent use.
 func (s *Sharded[K, V]) OnEvict(f OnEvictFunc[K, V]) {
 	for _, shard := range s.shards {
 		shard.OnEvict(f)

@@ -2,19 +2,17 @@ package lru
 
 import (
 	"errors"
+	"fmt"
 	"sync"
-)
 
-// Cache errors
-var (
-	ErrKeyNotFound = errors.New("key not found in cache")
-	ErrNilValue    = errors.New("nil value not allowed")
+	"golang.org/x/sync/singleflight"
 )
 
 // OnEvictFunc is a function that is called when an entry is evicted from the cache.
 type OnEvictFunc[K comparable, V any] func(key K, value V)
 
 // Cache represents a thread-safe, fixed-size LRU cache.
+// A Cache must be created with [New] or [MustNew]; the zero value is not ready for use.
 type Cache[K comparable, V any] struct {
 	capacity int
 	items    map[K]*entry[K, V]
@@ -22,6 +20,7 @@ type Cache[K comparable, V any] struct {
 	tail     *entry[K, V] // least recently used
 	mu       sync.RWMutex
 	onEvict  OnEvictFunc[K, V] // callback for evictions
+	sfGroup  singleflight.Group
 }
 
 // entry is an intrusive doubly-linked list node.
@@ -98,7 +97,7 @@ func (c *Cache[K, V]) Peek(key K) (V, bool) {
 // Note: if multiple goroutines call GetOrSet concurrently for the same missing key,
 // compute may be called multiple times but only one result will be cached.
 func (c *Cache[K, V]) GetOrSet(key K, compute func() (V, error)) (V, error) {
-	// first try to get the item without a write lock
+	// fast path: check if item exists
 	if val, found := c.Get(key); found {
 		return val, nil
 	}
@@ -129,6 +128,58 @@ func (c *Cache[K, V]) GetOrSet(key K, compute func() (V, error)) (V, error) {
 		onEvict(evictedKey, evictedVal)
 	}
 	return val, nil
+}
+
+// GetOrSetSingleflight retrieves a value from the cache by key, or computes and sets it if not present.
+// Unlike [Cache.GetOrSet], if multiple goroutines call GetOrSetSingleflight concurrently for the same
+// missing key, the compute function is called exactly once and all callers receive the same result.
+// This is useful when the compute function is expensive (e.g., database queries, API calls).
+//
+// The singleflight deduplication only applies to concurrent in-flight calls; once a value is cached,
+// subsequent calls return the cached value without invoking singleflight.
+func (c *Cache[K, V]) GetOrSetSingleflight(key K, compute func() (V, error)) (V, error) {
+	// fast path: check if item exists
+	if val, found := c.Get(key); found {
+		return val, nil
+	}
+
+	// use singleflight to deduplicate concurrent computes for the same key
+	sfKey := fmt.Sprintf("%v", key)
+	result, err, _ := c.sfGroup.Do(sfKey, func() (any, error) {
+		// check again inside singleflight in case another goroutine just cached it
+		if val, found := c.Get(key); found {
+			return val, nil
+		}
+
+		val, err := compute()
+		if err != nil {
+			return nil, err
+		}
+
+		c.mu.Lock()
+		// check again in case it was added while we were computing
+		if e, found := c.items[key]; found {
+			c.moveToFront(e)
+			existingVal := e.val
+			c.mu.Unlock()
+			return existingVal, nil
+		}
+
+		evictedKey, evictedVal, hasEvicted := c.setLocked(key, val)
+		onEvict := c.onEvict
+		c.mu.Unlock()
+
+		if hasEvicted && onEvict != nil {
+			onEvict(evictedKey, evictedVal)
+		}
+		return val, nil
+	})
+
+	if err != nil {
+		var zero V
+		return zero, err
+	}
+	return result.(V), nil
 }
 
 // Set adds or updates an item in the cache.
@@ -305,6 +356,9 @@ func (c *Cache[K, V]) Capacity() int {
 
 // OnEvict sets a callback function that will be called when an entry is evicted from the cache.
 // The callback will receive the key and value of the evicted entry.
+//
+// The callback is invoked after the cache's internal lock is released and may be called
+// concurrently from multiple goroutines. It must be safe for concurrent use.
 func (c *Cache[K, V]) OnEvict(f OnEvictFunc[K, V]) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

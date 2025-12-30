@@ -2,6 +2,8 @@ package lru
 
 import (
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -410,4 +412,195 @@ func TestExpirable_Peek(t *testing.T) {
 	// but Get() should remove it
 	_, found = cache.Get("b")
 	r.False(found)
+}
+
+func TestExpirable_GetOrSetSingleflight(t *testing.T) {
+	r := require.New(t)
+	mockClock := newMockTime()
+
+	cache, err := NewExpirable[string, int](5, time.Minute)
+	r.NoError(err)
+	cache.timeNow = mockClock.Now
+
+	// basic functionality: compute is called when key doesn't exist
+	var computeCount atomic.Int32
+	val, err := cache.GetOrSetSingleflight("a", func() (int, error) {
+		computeCount.Add(1)
+		return 42, nil
+	})
+	r.NoError(err)
+	r.Equal(42, val)
+	r.Equal(int32(1), computeCount.Load())
+
+	// second call should use cached value, compute not called
+	val, err = cache.GetOrSetSingleflight("a", func() (int, error) {
+		computeCount.Add(1)
+		return 99, nil
+	})
+	r.NoError(err)
+	r.Equal(42, val)
+	r.Equal(int32(1), computeCount.Load())
+
+	// expire the entry
+	mockClock.Add(time.Minute + time.Second)
+
+	// now compute should be called again
+	val, err = cache.GetOrSetSingleflight("a", func() (int, error) {
+		computeCount.Add(1)
+		return 100, nil
+	})
+	r.NoError(err)
+	r.Equal(100, val)
+	r.Equal(int32(2), computeCount.Load())
+
+	// error case
+	_, err = cache.GetOrSetSingleflight("error", func() (int, error) {
+		return 0, errors.New("compute error")
+	})
+	r.Error(err)
+	r.False(cache.Contains("error"))
+}
+
+func TestExpirable_GetOrSetSingleflight_Concurrent(t *testing.T) {
+	r := require.New(t)
+	cache, err := NewExpirable[string, int](5, time.Minute)
+	r.NoError(err)
+
+	const goroutines = 100
+	var computeCount atomic.Int32
+	var wg sync.WaitGroup
+	results := make([]int, goroutines)
+
+	// all goroutines try to get the same key concurrently
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			val, err := cache.GetOrSetSingleflight("shared", func() (int, error) {
+				computeCount.Add(1)
+				return 42, nil
+			})
+			r.NoError(err)
+			results[idx] = val
+		}(i)
+	}
+	wg.Wait()
+
+	// compute should have been called exactly once
+	r.Equal(int32(1), computeCount.Load(), "compute should be called exactly once")
+
+	// all results should be the same
+	for i, result := range results {
+		r.Equal(42, result, "goroutine %d got wrong result", i)
+	}
+}
+
+func TestExpirable_WithTTL(t *testing.T) {
+	r := require.New(t)
+	mockClock := newMockTime()
+
+	cache, err := NewExpirable[string, int](5, time.Minute)
+	r.NoError(err)
+	cache.timeNow = mockClock.Now
+
+	// set with default TTL (1 minute)
+	cache.Set("default", 1)
+
+	// set with shorter TTL (30 seconds)
+	cache.Set("short", 2, WithTTL(30*time.Second))
+
+	// set with longer TTL (2 minutes)
+	cache.Set("long", 3, WithTTL(2*time.Minute))
+
+	// all should be present initially
+	r.True(cache.Contains("default"))
+	r.True(cache.Contains("short"))
+	r.True(cache.Contains("long"))
+
+	// advance 35 seconds - short should expire
+	mockClock.Add(35 * time.Second)
+
+	r.True(cache.Contains("default"))
+	r.False(cache.Contains("short"))
+	r.True(cache.Contains("long"))
+
+	// advance to 65 seconds - default should also expire
+	mockClock.Add(30 * time.Second)
+
+	r.False(cache.Contains("default"))
+	r.False(cache.Contains("short"))
+	r.True(cache.Contains("long"))
+
+	// advance to 2.5 minutes - all should be expired
+	mockClock.Add(90 * time.Second)
+
+	r.False(cache.Contains("default"))
+	r.False(cache.Contains("short"))
+	r.False(cache.Contains("long"))
+}
+
+func TestExpirable_WithTTL_GetOrSet(t *testing.T) {
+	r := require.New(t)
+	mockClock := newMockTime()
+
+	cache, err := NewExpirable[string, int](5, time.Minute)
+	r.NoError(err)
+	cache.timeNow = mockClock.Now
+
+	// GetOrSet with custom TTL
+	val, err := cache.GetOrSet("key", func() (int, error) {
+		return 42, nil
+	}, WithTTL(30*time.Second))
+	r.NoError(err)
+	r.Equal(42, val)
+
+	// verify TTL by checking it expires at the right time
+	mockClock.Add(25 * time.Second)
+	r.True(cache.Contains("key"))
+
+	mockClock.Add(10 * time.Second) // 35 seconds total
+	r.False(cache.Contains("key"))
+}
+
+func TestExpirable_WithTTL_GetOrSetSingleflight(t *testing.T) {
+	r := require.New(t)
+	mockClock := newMockTime()
+
+	cache, err := NewExpirable[string, int](5, time.Minute)
+	r.NoError(err)
+	cache.timeNow = mockClock.Now
+
+	// GetOrSetSingleflight with custom TTL
+	val, err := cache.GetOrSetSingleflight("key", func() (int, error) {
+		return 42, nil
+	}, WithTTL(30*time.Second))
+	r.NoError(err)
+	r.Equal(42, val)
+
+	// verify TTL by checking it expires at the right time
+	mockClock.Add(25 * time.Second)
+	r.True(cache.Contains("key"))
+
+	mockClock.Add(10 * time.Second) // 35 seconds total
+	r.False(cache.Contains("key"))
+}
+
+func TestExpirable_WithTTL_ZeroUsesDefault(t *testing.T) {
+	r := require.New(t)
+	mockClock := newMockTime()
+
+	cache, err := NewExpirable[string, int](5, time.Minute)
+	r.NoError(err)
+	cache.timeNow = mockClock.Now
+
+	// WithTTL(0) should use default TTL
+	cache.Set("key", 42, WithTTL(0))
+
+	// should still be there at 55 seconds
+	mockClock.Add(55 * time.Second)
+	r.True(cache.Contains("key"))
+
+	// should be gone at 65 seconds (past 1 minute default)
+	mockClock.Add(10 * time.Second)
+	r.False(cache.Contains("key"))
 }
