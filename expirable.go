@@ -2,8 +2,11 @@ package lru
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 // expirableEntry is an intrusive doubly-linked list node with expiry.
@@ -16,6 +19,9 @@ type expirableEntry[K comparable, V any] struct {
 }
 
 // Expirable represents a thread-safe, fixed-size LRU cache with expiry functionality.
+// Each entry has an absolute expiration time set when written via [Expirable.Set] or
+// [Expirable.GetOrSet]. The TTL is not refreshed on reads (no sliding expiration).
+// An Expirable must be created with [NewExpirable] or [MustNewExpirable]; the zero value is not ready for use.
 type Expirable[K comparable, V any] struct {
 	capacity int
 	items    map[K]*expirableEntry[K, V]
@@ -25,10 +31,29 @@ type Expirable[K comparable, V any] struct {
 	ttl      time.Duration
 	timeNow  func() time.Time  // for testing
 	onEvict  OnEvictFunc[K, V] // callback for evictions
+	sfGroup  singleflight.Group
+}
+
+// setOptions holds optional parameters for Set operations.
+type setOptions struct {
+	ttl time.Duration
+}
+
+// SetOption is a functional option for [Expirable.Set], [Expirable.GetOrSet],
+// and [Expirable.GetOrSetSingleflight].
+type SetOption func(*setOptions)
+
+// WithTTL sets a custom TTL for the entry being set, overriding the cache's default TTL.
+// If ttl is zero or negative, the cache's default TTL is used instead.
+func WithTTL(ttl time.Duration) SetOption {
+	return func(o *setOptions) {
+		o.ttl = ttl
+	}
 }
 
 // NewExpirable creates a new LRU cache with the given capacity and TTL.
-// Items will be automatically removed from the cache when they expire.
+// Each entry expires a fixed duration after it is written via Set or GetOrSet.
+// Reads (Get, Peek, GetWithTTL) do not extend an entry's TTL.
 // The capacity must be greater than zero, and the TTL must be greater than zero.
 func NewExpirable[K comparable, V any](capacity int, ttl time.Duration) (*Expirable[K, V], error) {
 	if capacity <= 0 {
@@ -96,7 +121,10 @@ func (c *Expirable[K, V]) Get(key K) (V, bool) {
 // Peek retrieves a value from the cache by key without updating its position
 // in the LRU list. This is useful for checking a value without affecting
 // eviction order. Returns the value and a boolean indicating whether the key
-// was found and not expired. Unlike Get, expired items are not removed.
+// was found and not expired.
+//
+// Note: Unlike [Expirable.Get], expired items are not removed from the cache.
+// Use [Expirable.RemoveExpired] to explicitly purge expired entries.
 func (c *Expirable[K, V]) Peek(key K) (V, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -162,10 +190,22 @@ func (c *Expirable[K, V]) GetWithTTL(key K) (V, time.Duration, bool) {
 // The compute function is only called if the key is not present in the cache or is expired.
 // Note: if multiple goroutines call GetOrSet concurrently for the same missing/expired key,
 // compute may be called multiple times but only one result will be cached.
-func (c *Expirable[K, V]) GetOrSet(key K, compute func() (V, error)) (V, error) {
-	// first try to get the item without a write lock
+//
+// Options can be passed to customize the entry, such as [WithTTL] to override
+// the cache's default TTL for this specific entry.
+func (c *Expirable[K, V]) GetOrSet(key K, compute func() (V, error), opts ...SetOption) (V, error) {
+	// fast path: check if item exists and is not expired
 	if val, found := c.Get(key); found {
 		return val, nil
+	}
+
+	opt := setOptions{}
+	for _, o := range opts {
+		o(&opt)
+	}
+	ttl := c.ttl
+	if opt.ttl > 0 {
+		ttl = opt.ttl
 	}
 
 	// compute the value outside the lock to avoid deadlock if compute
@@ -194,7 +234,7 @@ func (c *Expirable[K, V]) GetOrSet(key K, compute func() (V, error)) (V, error) 
 	}
 
 	// add to cache
-	evictedKey, evictedVal, hasEvicted := c.setLocked(key, val)
+	evictedKey, evictedVal, hasEvicted := c.setLocked(key, val, ttl)
 	onEvict := c.onEvict
 	c.mu.Unlock()
 
@@ -209,13 +249,103 @@ func (c *Expirable[K, V]) GetOrSet(key K, compute func() (V, error)) (V, error) 
 	return val, nil
 }
 
+// GetOrSetSingleflight retrieves a value from the cache by key, or computes and sets it if not present or expired.
+// Unlike [Expirable.GetOrSet], if multiple goroutines call GetOrSetSingleflight concurrently for the same
+// missing/expired key, the compute function is called exactly once and all callers receive the same result.
+// This is useful when the compute function is expensive (e.g., database queries, API calls).
+//
+// The singleflight deduplication only applies to concurrent in-flight calls; once a value is cached,
+// subsequent calls return the cached value without invoking singleflight.
+//
+// Options can be passed to customize the entry, such as [WithTTL] to override
+// the cache's default TTL for this specific entry.
+func (c *Expirable[K, V]) GetOrSetSingleflight(key K, compute func() (V, error), opts ...SetOption) (V, error) {
+	// fast path: check if item exists and is not expired
+	if val, found := c.Get(key); found {
+		return val, nil
+	}
+
+	opt := setOptions{}
+	for _, o := range opts {
+		o(&opt)
+	}
+	ttl := c.ttl
+	if opt.ttl > 0 {
+		ttl = opt.ttl
+	}
+
+	// use singleflight to deduplicate concurrent computes for the same key
+	sfKey := fmt.Sprintf("%v", key)
+	result, err, _ := c.sfGroup.Do(sfKey, func() (any, error) {
+		// check again inside singleflight in case another goroutine just cached it
+		if val, found := c.Get(key); found {
+			return val, nil
+		}
+
+		val, err := compute()
+		if err != nil {
+			return nil, err
+		}
+
+		c.mu.Lock()
+		// check again in case it was added while we were computing
+		e, found := c.items[key]
+		var expiredEntry *expirableEntry[K, V]
+		if found {
+			if !c.timeNow().After(e.expiry) {
+				c.moveToFront(e)
+				existingVal := e.val
+				c.mu.Unlock()
+				return existingVal, nil
+			}
+			// expired entry, remove it and save for callback
+			expiredEntry = e
+			delete(c.items, key)
+			c.removeEntry(e)
+		}
+
+		evictedKey, evictedVal, hasEvicted := c.setLocked(key, val, ttl)
+		onEvict := c.onEvict
+		c.mu.Unlock()
+
+		if onEvict != nil {
+			if expiredEntry != nil {
+				onEvict(expiredEntry.key, expiredEntry.val)
+			}
+			if hasEvicted {
+				onEvict(evictedKey, evictedVal)
+			}
+		}
+		return val, nil
+	})
+
+	if err != nil {
+		var zero V
+		return zero, err
+	}
+	return result.(V), nil
+}
+
 // Set adds or updates an item in the cache.
 // If the key already exists, its value is updated.
 // If the cache is at capacity, the least recently used item is evicted.
 // Expired items are removed lazily on access or via RemoveExpired.
-func (c *Expirable[K, V]) Set(key K, value V) {
+//
+// Options can be passed to customize the entry, such as [WithTTL] to override
+// the cache's default TTL for this specific entry.
+func (c *Expirable[K, V]) Set(key K, value V, opts ...SetOption) {
+	opt := setOptions{}
+	for _, o := range opts {
+		o(&opt)
+	}
+
+	ttl := c.ttl
+	if opt.ttl > 0 {
+		ttl = opt.ttl
+	}
+
 	c.mu.Lock()
-	evictedKey, evictedVal, hasEvicted := c.setLocked(key, value)
+	evictedKey, evictedVal, hasEvicted := c.setLocked(key, value, ttl)
 	onEvict := c.onEvict
 	c.mu.Unlock()
 
@@ -227,12 +357,12 @@ func (c *Expirable[K, V]) Set(key K, value V) {
 // setLocked is an internal method that adds or updates an item in the cache.
 // it assumes the mutex is already locked.
 // Returns the evicted key/value and whether an eviction occurred.
-func (c *Expirable[K, V]) setLocked(key K, value V) (evictedKey K, evictedVal V, evicted bool) {
+func (c *Expirable[K, V]) setLocked(key K, value V, ttl time.Duration) (evictedKey K, evictedVal V, evicted bool) {
 	// if key exists, update value and expiry and move to front
 	if e, found := c.items[key]; found {
 		c.moveToFront(e)
 		e.val = value
-		e.expiry = c.timeNow().Add(c.ttl)
+		e.expiry = c.timeNow().Add(ttl)
 		return
 	}
 
@@ -252,7 +382,7 @@ func (c *Expirable[K, V]) setLocked(key K, value V) (evictedKey K, evictedVal V,
 	e := &expirableEntry[K, V]{
 		key:    key,
 		val:    value,
-		expiry: c.timeNow().Add(c.ttl),
+		expiry: c.timeNow().Add(ttl),
 	}
 	c.pushFront(e)
 	c.items[key] = e
@@ -322,6 +452,9 @@ func (c *Expirable[K, V]) Remove(key K) bool {
 }
 
 // Len returns the current number of non-expired items in the cache.
+//
+// Note: This method does not remove expired entries; it only excludes them from the count.
+// Use [Expirable.RemoveExpired] to explicitly purge expired entries.
 func (c *Expirable[K, V]) Len() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -339,6 +472,9 @@ func (c *Expirable[K, V]) Len() int {
 }
 
 // Clear removes all items from the cache.
+//
+// If an eviction callback is set, it is called only for entries that have not
+// yet expired at the time of clearing.
 func (c *Expirable[K, V]) Clear() {
 	c.mu.Lock()
 	onEvict := c.onEvict
@@ -365,6 +501,9 @@ func (c *Expirable[K, V]) Clear() {
 }
 
 // Contains checks if a key exists in the cache and is not expired.
+//
+// Note: This method does not remove expired entries from the cache.
+// Use [Expirable.RemoveExpired] to explicitly purge expired entries.
 func (c *Expirable[K, V]) Contains(key K) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -424,6 +563,9 @@ func (c *Expirable[K, V]) SetTTL(ttl time.Duration) error {
 // OnEvict sets a callback function that will be called when an entry is evicted from the cache.
 // The callback will receive the key and value of the evicted entry.
 // This includes both manual removals and automatic evictions due to capacity or expiry.
+//
+// The callback is invoked after the cache's internal lock is released and may be called
+// concurrently from multiple goroutines. It must be safe for concurrent use.
 func (c *Expirable[K, V]) OnEvict(f OnEvictFunc[K, V]) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

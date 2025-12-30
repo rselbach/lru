@@ -48,9 +48,10 @@ func TestSharded_New(t *testing.T) {
 
 func TestSharded_NewWithCount(t *testing.T) {
 	tests := map[string]struct {
-		capacity    int
-		shardCount  int
-		expectError bool
+		capacity         int
+		shardCount       int
+		expectError      bool
+		wantShardCount   int // expected shard count after clamping (0 means use shardCount)
 	}{
 		"valid capacity and shard count": {
 			capacity:    100,
@@ -73,9 +74,10 @@ func TestSharded_NewWithCount(t *testing.T) {
 			expectError: true,
 		},
 		"more shards than capacity": {
-			capacity:    4,
-			shardCount:  16,
-			expectError: false, // each shard gets capacity 1
+			capacity:       4,
+			shardCount:     16,
+			expectError:    false,
+			wantShardCount: 4, // clamped to capacity
 		},
 	}
 
@@ -91,7 +93,11 @@ func TestSharded_NewWithCount(t *testing.T) {
 				r.NoError(err)
 				r.NotNil(cache)
 				r.Equal(tc.capacity, cache.Capacity())
-				r.Equal(tc.shardCount, cache.ShardCount())
+				wantShards := tc.shardCount
+				if tc.wantShardCount > 0 {
+					wantShards = tc.wantShardCount
+				}
+				r.Equal(wantShards, cache.ShardCount())
 			}
 		})
 	}
@@ -803,4 +809,68 @@ func TestSharded_OnEvictCalledOutsideLock(t *testing.T) {
 	cache.Set(3, 3) // should evict and call callback
 
 	r.True(callbackExecuted.Load(), "callback should have been executed")
+}
+
+func TestSharded_GetOrSetSingleflight(t *testing.T) {
+	r := require.New(t)
+	cache := MustNewSharded[string, int](100)
+
+	// basic functionality: compute is called when key doesn't exist
+	var computeCount atomic.Int32
+	val, err := cache.GetOrSetSingleflight("a", func() (int, error) {
+		computeCount.Add(1)
+		return 42, nil
+	})
+	r.NoError(err)
+	r.Equal(42, val)
+	r.Equal(int32(1), computeCount.Load())
+
+	// second call should use cached value, compute not called
+	val, err = cache.GetOrSetSingleflight("a", func() (int, error) {
+		computeCount.Add(1)
+		return 99, nil
+	})
+	r.NoError(err)
+	r.Equal(42, val)
+	r.Equal(int32(1), computeCount.Load())
+
+	// error case
+	_, err = cache.GetOrSetSingleflight("error", func() (int, error) {
+		return 0, fmt.Errorf("compute error")
+	})
+	r.Error(err)
+	r.False(cache.Contains("error"))
+}
+
+func TestSharded_GetOrSetSingleflight_Concurrent(t *testing.T) {
+	r := require.New(t)
+	cache := MustNewSharded[string, int](100)
+
+	const goroutines = 100
+	var computeCount atomic.Int32
+	var wg sync.WaitGroup
+	results := make([]int, goroutines)
+
+	// all goroutines try to get the same key concurrently
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			val, err := cache.GetOrSetSingleflight("shared", func() (int, error) {
+				computeCount.Add(1)
+				return 42, nil
+			})
+			r.NoError(err)
+			results[idx] = val
+		}(i)
+	}
+	wg.Wait()
+
+	// compute should have been called exactly once
+	r.Equal(int32(1), computeCount.Load(), "compute should be called exactly once")
+
+	// all results should be the same
+	for i, result := range results {
+		r.Equal(42, result, "goroutine %d got wrong result", i)
+	}
 }
