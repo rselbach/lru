@@ -561,23 +561,23 @@ func TestCache_GetOrSetSingleflight(t *testing.T) {
 	cache := MustNew[string, int](5)
 
 	// basic functionality: compute is called when key doesn't exist
-	var computeCount atomic.Int32
+	var computeCount int32
 	val, err := cache.GetOrSetSingleflight("a", func() (int, error) {
-		computeCount.Add(1)
+		atomic.AddInt32(&computeCount, 1)
 		return 42, nil
 	})
 	r.NoError(err)
 	r.Equal(42, val)
-	r.Equal(int32(1), computeCount.Load())
+	r.Equal(int32(1), atomic.LoadInt32(&computeCount))
 
 	// second call should use cached value, compute not called
 	val, err = cache.GetOrSetSingleflight("a", func() (int, error) {
-		computeCount.Add(1)
+		atomic.AddInt32(&computeCount, 1)
 		return 99, nil
 	})
 	r.NoError(err)
 	r.Equal(42, val)
-	r.Equal(int32(1), computeCount.Load())
+	r.Equal(int32(1), atomic.LoadInt32(&computeCount))
 
 	// error case
 	_, err = cache.GetOrSetSingleflight("error", func() (int, error) {
@@ -592,7 +592,7 @@ func TestCache_GetOrSetSingleflight_Concurrent(t *testing.T) {
 	cache := MustNew[string, int](5)
 
 	const goroutines = 100
-	var computeCount atomic.Int32
+	var computeCount int32
 	var wg sync.WaitGroup
 	results := make([]int, goroutines)
 
@@ -602,7 +602,7 @@ func TestCache_GetOrSetSingleflight_Concurrent(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			val, err := cache.GetOrSetSingleflight("shared", func() (int, error) {
-				computeCount.Add(1)
+				atomic.AddInt32(&computeCount, 1)
 				return 42, nil
 			})
 			r.NoError(err)
@@ -612,7 +612,7 @@ func TestCache_GetOrSetSingleflight_Concurrent(t *testing.T) {
 	wg.Wait()
 
 	// compute should have been called exactly once
-	r.Equal(int32(1), computeCount.Load(), "compute should be called exactly once")
+	r.Equal(int32(1), atomic.LoadInt32(&computeCount), "compute should be called exactly once")
 
 	// all results should be the same
 	for i, result := range results {
