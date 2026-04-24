@@ -291,6 +291,32 @@ func BenchmarkExpirable_Set_Evict(b *testing.B) {
 	}
 }
 
+func BenchmarkExpirable_Set_FullWithExpired(b *testing.B) {
+	for _, size := range benchSizes {
+		b.Run(fmt.Sprintf("size=%d", size), func(b *testing.B) {
+			cache := MustNewExpirable[int, int](size, time.Hour)
+
+			now := time.Now()
+			cache.SetTimeNowFunc(func() time.Time { return now })
+
+			b.ResetTimer()
+			b.ReportAllocs()
+
+			for i := 0; i < b.N; i++ {
+				b.StopTimer()
+				cache.Clear()
+				for j := 0; j < size; j++ {
+					cache.Set(i*size+j, j)
+				}
+				now = now.Add(2 * time.Hour)
+				b.StartTimer()
+
+				cache.Set(-i-1, i)
+			}
+		})
+	}
+}
+
 func BenchmarkExpirable_GetWithTTL(b *testing.B) {
 	for _, size := range benchSizes {
 		b.Run(fmt.Sprintf("size=%d", size), func(b *testing.B) {

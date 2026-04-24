@@ -145,7 +145,7 @@ func Example_lruAndExpiration() {
 	advanceTime(61 * time.Second) // Now past the 1 minute TTL
 
 	// This should only return D since all other items have expired and
-	// our Set operation automatically removes expired items
+	// the full cache purges expired entries before evicting live entries.
 	cache.Set("D", "Item D")
 	fmt.Printf("After adding D: %v\n", cache.Keys())
 
@@ -205,7 +205,8 @@ func Example_expirableEvictionCallback() {
 	// Advance time to expire all items
 	advanceTime(time.Minute + time.Second)
 
-	// Expired items won't be automatically removed until a write operation
+	// Expired items won't be physically removed until access, a capacity write,
+	// or explicit cleanup.
 	fmt.Printf("After time advance, items still in cache (lazy): %v\n", cache.Keys())
 
 	// Explicit removal of expired items will trigger callbacks

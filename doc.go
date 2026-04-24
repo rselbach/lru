@@ -48,8 +48,9 @@
 //	cache.Set("shortLived", 42, lru.WithTTL(30*time.Second))
 //	cache.Set("longLived", 100, lru.WithTTL(1*time.Hour))
 //
-// Expired entries are removed lazily on access or during write operations.
-// Call [Expirable.RemoveExpired] to explicitly purge all expired entries.
+// Expired entries are removed lazily on access. When a write needs capacity,
+// expired entries are purged before evicting a non-expired LRU entry. Call
+// [Expirable.RemoveExpired] to explicitly purge all expired entries.
 //
 // # Eviction Callbacks
 //

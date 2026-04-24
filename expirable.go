@@ -230,17 +230,16 @@ func (c *Expirable[K, V]) GetOrSet(key K, compute func() (V, error), opts ...Set
 		c.removeEntry(e)
 	}
 
-	// add to cache
-	evictedKey, evictedVal, hasEvicted := c.setLocked(key, val, ttl)
 	onEvict := c.onEvict
+	evicted := c.setLocked(key, val, ttl, onEvict != nil)
 	c.mu.Unlock()
 
 	if onEvict != nil {
 		if expiredEntry != nil {
 			onEvict(expiredEntry.key, expiredEntry.val)
 		}
-		if hasEvicted {
-			onEvict(evictedKey, evictedVal)
+		for _, e := range evicted {
+			onEvict(e.key, e.val)
 		}
 	}
 	return val, nil
@@ -301,16 +300,16 @@ func (c *Expirable[K, V]) GetOrSetSingleflight(key K, compute func() (V, error),
 			c.removeEntry(e)
 		}
 
-		evictedKey, evictedVal, hasEvicted := c.setLocked(key, val, ttl)
 		onEvict := c.onEvict
+		evicted := c.setLocked(key, val, ttl, onEvict != nil)
 		c.mu.Unlock()
 
 		if onEvict != nil {
 			if expiredEntry != nil {
 				onEvict(expiredEntry.key, expiredEntry.val)
 			}
-			if hasEvicted {
-				onEvict(evictedKey, evictedVal)
+			for _, e := range evicted {
+				onEvict(e.key, e.val)
 			}
 		}
 		return val, nil
@@ -326,7 +325,10 @@ func (c *Expirable[K, V]) GetOrSetSingleflight(key K, compute func() (V, error),
 // Set adds or updates an item in the cache.
 // If the key already exists, its value is updated.
 // If the cache is at capacity, the least recently used item is evicted.
-// Expired items are removed lazily on access or via RemoveExpired.
+// If a new key would exceed capacity, expired entries are removed before
+// evicting a non-expired least recently used entry. Otherwise expired items are
+// removed lazily on access or via RemoveExpired. The capacity cleanup scans the
+// cache only when physical storage is full.
 //
 // Options can be passed to customize the entry, such as [WithTTL] to override
 // the cache's default TTL for this specific entry.
@@ -342,34 +344,80 @@ func (c *Expirable[K, V]) Set(key K, value V, opts ...SetOption) {
 	}
 
 	c.mu.Lock()
-	evictedKey, evictedVal, hasEvicted := c.setLocked(key, value, ttl)
 	onEvict := c.onEvict
+	evicted := c.setLocked(key, value, ttl, onEvict != nil)
 	c.mu.Unlock()
 
-	if hasEvicted && onEvict != nil {
-		onEvict(evictedKey, evictedVal)
+	for _, e := range evicted {
+		onEvict(e.key, e.val)
 	}
+}
+
+// Resize changes the maximum capacity of the cache.
+// The new capacity must be greater than zero. Expired entries are purged first
+// and do not count toward the returned eviction count. If the cache is still
+// over capacity after expiry cleanup, least recently used non-expired entries
+// are evicted until the cache length is less than or equal to capacity.
+func (c *Expirable[K, V]) Resize(capacity int) (int, error) {
+	if capacity <= 0 {
+		return 0, errors.New("capacity must be greater than zero")
+	}
+
+	c.mu.Lock()
+	onEvict := c.onEvict
+	evicted := c.removeExpiredLocked(c.timeNow(), onEvict != nil)
+	liveEvicted := 0
+
+	for len(c.items) > capacity {
+		oldest := c.tail
+		if oldest == nil {
+			break
+		}
+		if onEvict != nil {
+			evicted = append(evicted, *oldest)
+		}
+		delete(c.items, oldest.key)
+		c.removeEntry(oldest)
+		liveEvicted++
+	}
+
+	c.capacity = capacity
+	c.mu.Unlock()
+
+	for _, e := range evicted {
+		onEvict(e.key, e.val)
+	}
+
+	return liveEvicted, nil
 }
 
 // setLocked is an internal method that adds or updates an item in the cache.
 // it assumes the mutex is already locked.
-// Returns the evicted key/value and whether an eviction occurred.
-func (c *Expirable[K, V]) setLocked(key K, value V, ttl time.Duration) (evictedKey K, evictedVal V, evicted bool) {
+// Returns entries removed due to expiry cleanup or capacity eviction.
+func (c *Expirable[K, V]) setLocked(key K, value V, ttl time.Duration, collectEvicted bool) []expirableEntry[K, V] {
 	// if key exists, update value and expiry and move to front
 	if e, found := c.items[key]; found {
 		c.moveToFront(e)
 		e.val = value
 		e.expiry = c.timeNow().Add(ttl)
-		return
+		return nil
 	}
 
-	// if we're at capacity, remove the least recently used item
+	var evicted []expirableEntry[K, V]
+
+	// If physical storage is full, purge expired entries before evicting a live
+	// least recently used entry.
+	if len(c.items) >= c.capacity {
+		evicted = c.removeExpiredLocked(c.timeNow(), collectEvicted)
+	}
+
+	// If we're still at capacity, remove the least recently used item.
 	if len(c.items) >= c.capacity {
 		oldest := c.tail
 		if oldest != nil {
-			evictedKey = oldest.key
-			evictedVal = oldest.val
-			evicted = true
+			if collectEvicted {
+				evicted = append(evicted, *oldest)
+			}
 			delete(c.items, oldest.key)
 			c.removeEntry(oldest)
 		}
@@ -383,7 +431,23 @@ func (c *Expirable[K, V]) setLocked(key K, value V, ttl time.Duration) (evictedK
 	}
 	c.pushFront(e)
 	c.items[key] = e
-	return
+	return evicted
+}
+
+func (c *Expirable[K, V]) removeExpiredLocked(now time.Time, collect bool) []expirableEntry[K, V] {
+	var expired []expirableEntry[K, V]
+	for e := c.head; e != nil; {
+		next := e.next
+		if now.After(e.expiry) {
+			if collect {
+				expired = append(expired, *e)
+			}
+			delete(c.items, e.key)
+			c.removeEntry(e)
+		}
+		e = next
+	}
+	return expired
 }
 
 // moveToFront moves an entry to the front of the list.
@@ -446,6 +510,73 @@ func (c *Expirable[K, V]) Remove(key K) bool {
 		onEvict(evictedKey, evictedVal)
 	}
 	return true
+}
+
+// GetOldest returns the least recently used non-expired entry without updating recency.
+func (c *Expirable[K, V]) GetOldest() (K, V, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	var zeroKey K
+	var zeroVal V
+	now := c.timeNow()
+
+	for e := c.tail; e != nil; e = e.prev {
+		if !now.After(e.expiry) {
+			return e.key, e.val, true
+		}
+	}
+
+	return zeroKey, zeroVal, false
+}
+
+// RemoveOldest removes and returns the least recently used non-expired entry.
+// Expired entries encountered while searching from the tail are also removed.
+func (c *Expirable[K, V]) RemoveOldest() (K, V, bool) {
+	c.mu.Lock()
+
+	var zeroKey K
+	var zeroVal V
+	var key K
+	var val V
+	found := false
+	now := c.timeNow()
+	onEvict := c.onEvict
+	var evicted []expirableEntry[K, V]
+
+	for e := c.tail; e != nil; {
+		prev := e.prev
+		if now.After(e.expiry) {
+			if onEvict != nil {
+				evicted = append(evicted, *e)
+			}
+			delete(c.items, e.key)
+			c.removeEntry(e)
+			e = prev
+			continue
+		}
+
+		key = e.key
+		val = e.val
+		found = true
+		if onEvict != nil {
+			evicted = append(evicted, *e)
+		}
+		delete(c.items, e.key)
+		c.removeEntry(e)
+		break
+	}
+
+	c.mu.Unlock()
+
+	for _, e := range evicted {
+		onEvict(e.key, e.val)
+	}
+
+	if !found {
+		return zeroKey, zeroVal, false
+	}
+	return key, val, true
 }
 
 // Len returns the current number of non-expired items in the cache.
@@ -531,8 +662,29 @@ func (c *Expirable[K, V]) Keys() []K {
 	return keys
 }
 
+// Values returns a slice of all values in the cache that haven't expired.
+// The order matches [Expirable.Keys]: most recently used to least recently used.
+func (c *Expirable[K, V]) Values() []V {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	now := c.timeNow()
+	values := make([]V, 0, len(c.items))
+
+	for e := c.head; e != nil; e = e.next {
+		if !now.After(e.expiry) {
+			values = append(values, e.val)
+		}
+	}
+
+	return values
+}
+
 // Capacity returns the maximum capacity of the cache.
 func (c *Expirable[K, V]) Capacity() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	return c.capacity
 }
 

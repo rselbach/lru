@@ -374,6 +374,286 @@ func TestExpirable_LRUEviction(t *testing.T) {
 	r.Equal([]string{"d", "a", "c"}, cache.Keys())
 }
 
+func TestExpirable_SetPurgesExpiredBeforeLiveEviction(t *testing.T) {
+	r := require.New(t)
+	mockClock := newMockTime()
+
+	cache := MustNewExpirable[string, int](3, time.Minute)
+	cache.timeNow = mockClock.Now
+
+	cache.Set("live-tail", 1)
+	cache.Set("expired", 2, WithTTL(30*time.Second))
+	cache.Set("live-head", 3)
+
+	var evictedKeys []string
+	cache.OnEvict(func(key string, _ int) {
+		evictedKeys = append(evictedKeys, key)
+	})
+
+	mockClock.Add(31 * time.Second)
+	cache.Set("new", 4)
+
+	r.True(cache.Contains("live-tail"))
+	r.True(cache.Contains("live-head"))
+	r.True(cache.Contains("new"))
+	r.False(cache.Contains("expired"))
+	r.Equal([]string{"new", "live-head", "live-tail"}, cache.Keys())
+	r.Len(cache.items, 3)
+	r.Equal([]string{"expired"}, evictedKeys)
+}
+
+func TestExpirable_SetExpiredCleanup_CallbackAfterUnlock(t *testing.T) {
+	r := require.New(t)
+	mockClock := newMockTime()
+
+	cache := MustNewExpirable[string, int](1, time.Minute)
+	cache.timeNow = mockClock.Now
+	cache.Set("expired", 1, WithTTL(30*time.Second))
+	mockClock.Add(31 * time.Second)
+
+	callbackLen := make(chan int, 1)
+	cache.OnEvict(func(string, int) {
+		callbackLen <- cache.Len()
+	})
+
+	done := make(chan struct{})
+	go func() {
+		cache.Set("new", 2)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		r.Equal(1, <-callbackLen)
+	case <-time.After(time.Second):
+		t.Fatal("Set cleanup callback appears to have run while the cache lock was held")
+	}
+}
+
+func TestExpirable_Resize(t *testing.T) {
+	r := require.New(t)
+	cache := MustNewExpirable[string, int](3, time.Minute)
+
+	cache.Set("a", 1)
+	cache.Set("b", 2)
+	cache.Set("c", 3)
+
+	evicted, err := cache.Resize(5)
+	r.NoError(err)
+	r.Equal(0, evicted)
+	r.Equal(5, cache.Capacity())
+	r.Equal([]string{"c", "b", "a"}, cache.Keys())
+
+	cache.Set("d", 4)
+	cache.Set("e", 5)
+
+	var evictedKeys []string
+	cache.OnEvict(func(key string, _ int) {
+		evictedKeys = append(evictedKeys, key)
+	})
+
+	evicted, err = cache.Resize(2)
+	r.NoError(err)
+	r.Equal(3, evicted)
+	r.Equal(2, cache.Capacity())
+	r.Equal([]string{"e", "d"}, cache.Keys())
+	r.Equal([]string{"a", "b", "c"}, evictedKeys)
+
+	evicted, err = cache.Resize(0)
+	r.Error(err)
+	r.Equal(0, evicted)
+	r.Equal(2, cache.Capacity())
+}
+
+func TestExpirable_Resize_PurgesExpiredBeforeLiveEviction(t *testing.T) {
+	r := require.New(t)
+	mockClock := newMockTime()
+
+	cache := MustNewExpirable[string, int](4, time.Minute)
+	cache.timeNow = mockClock.Now
+	cache.Set("expired-tail", 1, WithTTL(30*time.Second))
+	cache.Set("live-tail", 2)
+	cache.Set("expired-middle", 3, WithTTL(30*time.Second))
+	cache.Set("live-head", 4)
+
+	var evictedKeys []string
+	cache.OnEvict(func(key string, _ int) {
+		evictedKeys = append(evictedKeys, key)
+	})
+
+	mockClock.Add(31 * time.Second)
+
+	evicted, err := cache.Resize(1)
+	r.NoError(err)
+	r.Equal(1, evicted)
+	r.Equal(1, cache.Capacity())
+	r.Equal([]string{"live-head"}, cache.Keys())
+	r.Len(cache.items, 1)
+	r.ElementsMatch([]string{"expired-middle", "expired-tail", "live-tail"}, evictedKeys)
+}
+
+func TestExpirable_Resize_CallbackAfterUnlock(t *testing.T) {
+	r := require.New(t)
+	cache := MustNewExpirable[string, int](2, time.Minute)
+	cache.Set("a", 1)
+	cache.Set("b", 2)
+
+	callbackLen := make(chan int, 1)
+	cache.OnEvict(func(string, int) {
+		callbackLen <- cache.Len()
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := cache.Resize(1)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		r.NoError(err)
+		r.Equal(1, <-callbackLen)
+	case <-time.After(time.Second):
+		t.Fatal("Resize callback appears to have run while the cache lock was held")
+	}
+}
+
+func TestExpirable_GetOldest(t *testing.T) {
+	r := require.New(t)
+	mockClock := newMockTime()
+
+	cache := MustNewExpirable[string, int](5, time.Minute)
+	cache.timeNow = mockClock.Now
+
+	key, value, ok := cache.GetOldest()
+	r.False(ok)
+	r.Empty(key)
+	r.Zero(value)
+
+	cache.Set("expired", 1, WithTTL(30*time.Second))
+	cache.Set("live1", 2)
+	cache.Set("live2", 3)
+
+	mockClock.Add(31 * time.Second)
+
+	key, value, ok = cache.GetOldest()
+	r.True(ok)
+	r.Equal("live1", key)
+	r.Equal(2, value)
+	r.Equal([]string{"live2", "live1"}, cache.Keys())
+	r.Len(cache.items, 3, "GetOldest should not purge expired entries")
+}
+
+func TestExpirable_RemoveOldest(t *testing.T) {
+	r := require.New(t)
+	mockClock := newMockTime()
+
+	cache := MustNewExpirable[string, int](5, time.Minute)
+	cache.timeNow = mockClock.Now
+
+	key, value, ok := cache.RemoveOldest()
+	r.False(ok)
+	r.Empty(key)
+	r.Zero(value)
+
+	cache.Set("expired", 1, WithTTL(30*time.Second))
+	cache.Set("live1", 2)
+	cache.Set("live2", 3)
+
+	var evictedKeys []string
+	cache.OnEvict(func(key string, _ int) {
+		evictedKeys = append(evictedKeys, key)
+	})
+
+	mockClock.Add(31 * time.Second)
+
+	key, value, ok = cache.RemoveOldest()
+	r.True(ok)
+	r.Equal("live1", key)
+	r.Equal(2, value)
+	r.Equal([]string{"live2"}, cache.Keys())
+	r.Len(cache.items, 1)
+	r.Equal([]string{"expired", "live1"}, evictedKeys)
+}
+
+func TestExpirable_RemoveOldest_AllExpired(t *testing.T) {
+	r := require.New(t)
+	mockClock := newMockTime()
+
+	cache := MustNewExpirable[string, int](5, time.Minute)
+	cache.timeNow = mockClock.Now
+	cache.Set("a", 1, WithTTL(30*time.Second))
+	cache.Set("b", 2, WithTTL(30*time.Second))
+
+	var evictedKeys []string
+	cache.OnEvict(func(key string, _ int) {
+		evictedKeys = append(evictedKeys, key)
+	})
+
+	mockClock.Add(31 * time.Second)
+
+	key, value, ok := cache.RemoveOldest()
+	r.False(ok)
+	r.Empty(key)
+	r.Zero(value)
+	r.Empty(cache.Keys())
+	r.Empty(cache.items)
+	r.Equal([]string{"a", "b"}, evictedKeys)
+}
+
+func TestExpirable_RemoveOldest_CallbackAfterUnlock(t *testing.T) {
+	r := require.New(t)
+	cache := MustNewExpirable[string, int](2, time.Minute)
+	cache.Set("a", 1)
+	cache.Set("b", 2)
+
+	callbackLen := make(chan int, 1)
+	cache.OnEvict(func(string, int) {
+		callbackLen <- cache.Len()
+	})
+
+	done := make(chan bool, 1)
+	go func() {
+		_, _, ok := cache.RemoveOldest()
+		done <- ok
+	}()
+
+	select {
+	case ok := <-done:
+		r.True(ok)
+		r.Equal(1, <-callbackLen)
+	case <-time.After(time.Second):
+		t.Fatal("RemoveOldest callback appears to have run while the cache lock was held")
+	}
+}
+
+func TestExpirable_Values(t *testing.T) {
+	r := require.New(t)
+	mockClock := newMockTime()
+
+	cache := MustNewExpirable[string, int](5, time.Minute)
+	cache.timeNow = mockClock.Now
+
+	r.Empty(cache.Values())
+
+	cache.Set("a", 1)
+	cache.Set("b", 2)
+	cache.Set("c", 3)
+
+	r.Equal([]string{"c", "b", "a"}, cache.Keys())
+	r.Equal([]int{3, 2, 1}, cache.Values())
+
+	_, _ = cache.Get("a")
+	r.Equal([]string{"a", "c", "b"}, cache.Keys())
+	r.Equal([]int{1, 3, 2}, cache.Values())
+
+	cache.Set("short", 4, WithTTL(30*time.Second))
+	mockClock.Add(31 * time.Second)
+
+	r.Equal([]string{"a", "c", "b"}, cache.Keys())
+	r.Equal([]int{1, 3, 2}, cache.Values())
+}
+
 func TestExpirable_Peek(t *testing.T) {
 	r := require.New(t)
 	mockClock := newMockTime()
