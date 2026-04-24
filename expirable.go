@@ -2,11 +2,8 @@ package lru
 
 import (
 	"errors"
-	"fmt"
 	"sync"
 	"time"
-
-	"golang.org/x/sync/singleflight"
 )
 
 // expirableEntry is an intrusive doubly-linked list node with expiry.
@@ -31,7 +28,7 @@ type Expirable[K comparable, V any] struct {
 	ttl      time.Duration
 	timeNow  func() time.Time  // for testing
 	onEvict  OnEvictFunc[K, V] // callback for evictions
-	sfGroup  singleflight.Group
+	sfGroup  flightGroup[K, V]
 }
 
 // setOptions holds optional parameters for Set operations.
@@ -274,9 +271,8 @@ func (c *Expirable[K, V]) GetOrSetSingleflight(key K, compute func() (V, error),
 		ttl = opt.ttl
 	}
 
-	// use singleflight to deduplicate concurrent computes for the same key
-	sfKey := fmt.Sprintf("%v", key)
-	result, err, _ := c.sfGroup.Do(sfKey, func() (any, error) {
+	// use singleflight to deduplicate concurrent computes for the same typed key
+	result, err := c.sfGroup.Do(key, func() (V, error) {
 		// check again inside singleflight in case another goroutine just cached it
 		if val, found := c.Get(key); found {
 			return val, nil
@@ -284,7 +280,8 @@ func (c *Expirable[K, V]) GetOrSetSingleflight(key K, compute func() (V, error),
 
 		val, err := compute()
 		if err != nil {
-			return nil, err
+			var zero V
+			return zero, err
 		}
 
 		c.mu.Lock()
@@ -323,7 +320,7 @@ func (c *Expirable[K, V]) GetOrSetSingleflight(key K, compute func() (V, error),
 		var zero V
 		return zero, err
 	}
-	return result.(V), nil
+	return result, nil
 }
 
 // Set adds or updates an item in the cache.

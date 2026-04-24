@@ -495,6 +495,74 @@ func TestExpirable_GetOrSetSingleflight_Concurrent(t *testing.T) {
 	}
 }
 
+func TestExpirable_GetOrSetSingleflight_DistinctStringifiedKeys(t *testing.T) {
+	r := require.New(t)
+	cache := MustNewExpirable[collidingStringKey, string](5, time.Minute)
+
+	computeStarted := make(chan int, 2)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseComputes := func() {
+		releaseOnce.Do(func() {
+			close(release)
+		})
+	}
+	defer releaseComputes()
+
+	type result struct {
+		keyID int
+		value string
+		err   error
+	}
+	results := make(chan result, 2)
+
+	for _, tc := range []struct {
+		key   collidingStringKey
+		value string
+	}{
+		{key: collidingStringKey{id: 1}, value: "value-1"},
+		{key: collidingStringKey{id: 2}, value: "value-2"},
+	} {
+		tc := tc
+		go func() {
+			value, err := cache.GetOrSetSingleflight(tc.key, func() (string, error) {
+				computeStarted <- tc.key.id
+				<-release
+				return tc.value, nil
+			})
+			results <- result{keyID: tc.key.id, value: value, err: err}
+		}()
+	}
+
+	started := make(map[int]bool)
+	for len(started) < 2 {
+		select {
+		case keyID := <-computeStarted:
+			started[keyID] = true
+		case <-time.After(time.Second):
+			releaseComputes()
+			t.Fatalf("expected both distinct keys to compute; started computes: %v", started)
+		}
+	}
+	releaseComputes()
+
+	got := make(map[int]string)
+	for i := 0; i < 2; i++ {
+		res := <-results
+		r.NoError(res.err)
+		got[res.keyID] = res.value
+	}
+
+	r.Equal(map[int]string{1: "value-1", 2: "value-2"}, got)
+
+	value, found := cache.Peek(collidingStringKey{id: 1})
+	r.True(found)
+	r.Equal("value-1", value)
+	value, found = cache.Peek(collidingStringKey{id: 2})
+	r.True(found)
+	r.Equal("value-2", value)
+}
+
 func TestExpirable_WithTTL(t *testing.T) {
 	r := require.New(t)
 	mockClock := newMockTime()

@@ -2,10 +2,7 @@ package lru
 
 import (
 	"errors"
-	"fmt"
 	"sync"
-
-	"golang.org/x/sync/singleflight"
 )
 
 // OnEvictFunc is a function that is called when an entry is evicted from the cache.
@@ -20,7 +17,7 @@ type Cache[K comparable, V any] struct {
 	tail     *entry[K, V] // least recently used
 	mu       sync.RWMutex
 	onEvict  OnEvictFunc[K, V] // callback for evictions
-	sfGroup  singleflight.Group
+	sfGroup  flightGroup[K, V]
 }
 
 // entry is an intrusive doubly-linked list node.
@@ -143,9 +140,8 @@ func (c *Cache[K, V]) GetOrSetSingleflight(key K, compute func() (V, error)) (V,
 		return val, nil
 	}
 
-	// use singleflight to deduplicate concurrent computes for the same key
-	sfKey := fmt.Sprintf("%v", key)
-	result, err, _ := c.sfGroup.Do(sfKey, func() (any, error) {
+	// use singleflight to deduplicate concurrent computes for the same typed key
+	result, err := c.sfGroup.Do(key, func() (V, error) {
 		// check again inside singleflight in case another goroutine just cached it
 		if val, found := c.Get(key); found {
 			return val, nil
@@ -153,7 +149,8 @@ func (c *Cache[K, V]) GetOrSetSingleflight(key K, compute func() (V, error)) (V,
 
 		val, err := compute()
 		if err != nil {
-			return nil, err
+			var zero V
+			return zero, err
 		}
 
 		c.mu.Lock()
@@ -179,7 +176,7 @@ func (c *Cache[K, V]) GetOrSetSingleflight(key K, compute func() (V, error)) (V,
 		var zero V
 		return zero, err
 	}
-	return result.(V), nil
+	return result, nil
 }
 
 // Set adds or updates an item in the cache.
@@ -198,6 +195,43 @@ func (c *Cache[K, V]) Set(key K, value V) {
 	if hasEvicted && onEvict != nil {
 		onEvict(evictedKey, evictedVal)
 	}
+}
+
+// Resize changes the maximum capacity of the cache.
+// The new capacity must be greater than zero. Increasing capacity does not evict
+// entries. Decreasing capacity evicts least recently used entries until the
+// cache length is less than or equal to capacity.
+func (c *Cache[K, V]) Resize(capacity int) (int, error) {
+	if capacity <= 0 {
+		return 0, errors.New("capacity must be greater than zero")
+	}
+
+	c.mu.Lock()
+	onEvict := c.onEvict
+	var evicted []entry[K, V]
+	evictedCount := 0
+
+	for len(c.items) > capacity {
+		oldest := c.tail
+		if oldest == nil {
+			break
+		}
+		if onEvict != nil {
+			evicted = append(evicted, *oldest)
+		}
+		delete(c.items, oldest.key)
+		c.remove(oldest)
+		evictedCount++
+	}
+
+	c.capacity = capacity
+	c.mu.Unlock()
+
+	for _, e := range evicted {
+		onEvict(e.key, e.val)
+	}
+
+	return evictedCount, nil
 }
 
 // setLocked is an internal method that adds or updates an item in the cache.
@@ -295,6 +329,45 @@ func (c *Cache[K, V]) Remove(key K) bool {
 	return true
 }
 
+// GetOldest returns the least recently used entry without updating recency.
+func (c *Cache[K, V]) GetOldest() (K, V, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	var zeroKey K
+	var zeroVal V
+	if c.tail == nil {
+		return zeroKey, zeroVal, false
+	}
+
+	return c.tail.key, c.tail.val, true
+}
+
+// RemoveOldest removes and returns the least recently used entry.
+func (c *Cache[K, V]) RemoveOldest() (K, V, bool) {
+	c.mu.Lock()
+	oldest := c.tail
+	if oldest == nil {
+		var zeroKey K
+		var zeroVal V
+		c.mu.Unlock()
+		return zeroKey, zeroVal, false
+	}
+
+	key := oldest.key
+	val := oldest.val
+	onEvict := c.onEvict
+
+	delete(c.items, key)
+	c.remove(oldest)
+	c.mu.Unlock()
+
+	if onEvict != nil {
+		onEvict(key, val)
+	}
+	return key, val, true
+}
+
 // Len returns the current number of items in the cache.
 func (c *Cache[K, V]) Len() int {
 	c.mu.RLock()
@@ -349,8 +422,25 @@ func (c *Cache[K, V]) Keys() []K {
 	return keys
 }
 
+// Values returns a slice of all values in the cache.
+// The order matches [Cache.Keys]: most recently used to least recently used.
+func (c *Cache[K, V]) Values() []V {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	values := make([]V, 0, len(c.items))
+	for e := c.head; e != nil; e = e.next {
+		values = append(values, e.val)
+	}
+
+	return values
+}
+
 // Capacity returns the maximum capacity of the cache.
 func (c *Cache[K, V]) Capacity() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	return c.capacity
 }
 

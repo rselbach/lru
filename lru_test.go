@@ -5,9 +5,18 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+type collidingStringKey struct {
+	id int
+}
+
+func (k collidingStringKey) String() string {
+	return "same"
+}
 
 func TestCache_New(t *testing.T) {
 	tests := map[string]struct {
@@ -310,6 +319,147 @@ func TestCache_Clear(t *testing.T) {
 	r.False(found)
 }
 
+func TestCache_Resize(t *testing.T) {
+	r := require.New(t)
+	cache := MustNew[string, int](3)
+
+	cache.Set("a", 1)
+	cache.Set("b", 2)
+	cache.Set("c", 3)
+
+	evicted, err := cache.Resize(5)
+	r.NoError(err)
+	r.Equal(0, evicted)
+	r.Equal(5, cache.Capacity())
+	r.Equal([]string{"c", "b", "a"}, cache.Keys())
+
+	cache.Set("d", 4)
+	cache.Set("e", 5)
+	r.Equal([]string{"e", "d", "c", "b", "a"}, cache.Keys())
+
+	var evictedKeys []string
+	cache.OnEvict(func(key string, _ int) {
+		evictedKeys = append(evictedKeys, key)
+	})
+
+	evicted, err = cache.Resize(2)
+	r.NoError(err)
+	r.Equal(3, evicted)
+	r.Equal(2, cache.Capacity())
+	r.Equal([]string{"e", "d"}, cache.Keys())
+	r.Equal([]string{"a", "b", "c"}, evictedKeys)
+
+	evicted, err = cache.Resize(0)
+	r.Error(err)
+	r.Equal(0, evicted)
+	r.Equal(2, cache.Capacity())
+}
+
+func TestCache_Resize_CallbackAfterUnlock(t *testing.T) {
+	r := require.New(t)
+	cache := MustNew[string, int](2)
+	cache.Set("a", 1)
+	cache.Set("b", 2)
+
+	callbackLen := make(chan int, 1)
+	cache.OnEvict(func(string, int) {
+		callbackLen <- cache.Len()
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := cache.Resize(1)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		r.NoError(err)
+		r.Equal(1, <-callbackLen)
+	case <-time.After(time.Second):
+		t.Fatal("Resize callback appears to have run while the cache lock was held")
+	}
+}
+
+func TestCache_Resize_ConcurrentAccess(t *testing.T) {
+	r := require.New(t)
+	cache := MustNew[int, int](10)
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 20*100)
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(base int) {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				switch j % 3 {
+				case 0:
+					cache.Set(base*100+j, j)
+				case 1:
+					cache.Get(j)
+				default:
+					_, err := cache.Resize(5 + j%20)
+					if err != nil {
+						errs <- err
+					}
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		r.NoError(err)
+	}
+
+	r.LessOrEqual(cache.Len(), cache.Capacity())
+}
+
+func TestCache_GetOldestRemoveOldest(t *testing.T) {
+	r := require.New(t)
+	cache := MustNew[string, int](3)
+
+	key, value, ok := cache.GetOldest()
+	r.False(ok)
+	r.Empty(key)
+	r.Zero(value)
+
+	key, value, ok = cache.RemoveOldest()
+	r.False(ok)
+	r.Empty(key)
+	r.Zero(value)
+
+	cache.Set("a", 1)
+	cache.Set("b", 2)
+	cache.Set("c", 3)
+
+	key, value, ok = cache.GetOldest()
+	r.True(ok)
+	r.Equal("a", key)
+	r.Equal(1, value)
+	r.Equal([]string{"c", "b", "a"}, cache.Keys())
+
+	_, _ = cache.Get("a")
+	key, value, ok = cache.GetOldest()
+	r.True(ok)
+	r.Equal("b", key)
+	r.Equal(2, value)
+	r.Equal([]string{"a", "c", "b"}, cache.Keys())
+
+	var evictedKeys []string
+	cache.OnEvict(func(key string, _ int) {
+		evictedKeys = append(evictedKeys, key)
+	})
+
+	key, value, ok = cache.RemoveOldest()
+	r.True(ok)
+	r.Equal("b", key)
+	r.Equal(2, value)
+	r.Equal([]string{"a", "c"}, cache.Keys())
+	r.Equal([]string{"b"}, evictedKeys)
+}
+
 func TestCache_Contains(t *testing.T) {
 	tests := map[string]struct {
 		setup map[string]int
@@ -361,6 +511,24 @@ func TestCache_Keys(t *testing.T) {
 	// access 'a' to bring it to front
 	_, _ = cache.Get("a")
 	r.Equal([]string{"a", "c", "b"}, cache.Keys())
+}
+
+func TestCache_Values(t *testing.T) {
+	r := require.New(t)
+	cache := MustNew[string, int](5)
+
+	r.Empty(cache.Values())
+
+	cache.Set("a", 1)
+	cache.Set("b", 2)
+	cache.Set("c", 3)
+
+	r.Equal([]string{"c", "b", "a"}, cache.Keys())
+	r.Equal([]int{3, 2, 1}, cache.Values())
+
+	_, _ = cache.Get("a")
+	r.Equal([]string{"a", "c", "b"}, cache.Keys())
+	r.Equal([]int{1, 3, 2}, cache.Values())
 }
 
 func TestCache_Peek(t *testing.T) {
@@ -450,4 +618,72 @@ func TestCache_GetOrSetSingleflight_Concurrent(t *testing.T) {
 	for i, result := range results {
 		r.Equal(42, result, "goroutine %d got wrong result", i)
 	}
+}
+
+func TestCache_GetOrSetSingleflight_DistinctStringifiedKeys(t *testing.T) {
+	r := require.New(t)
+	cache := MustNew[collidingStringKey, string](5)
+
+	computeStarted := make(chan int, 2)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseComputes := func() {
+		releaseOnce.Do(func() {
+			close(release)
+		})
+	}
+	defer releaseComputes()
+
+	type result struct {
+		keyID int
+		value string
+		err   error
+	}
+	results := make(chan result, 2)
+
+	for _, tc := range []struct {
+		key   collidingStringKey
+		value string
+	}{
+		{key: collidingStringKey{id: 1}, value: "value-1"},
+		{key: collidingStringKey{id: 2}, value: "value-2"},
+	} {
+		tc := tc
+		go func() {
+			value, err := cache.GetOrSetSingleflight(tc.key, func() (string, error) {
+				computeStarted <- tc.key.id
+				<-release
+				return tc.value, nil
+			})
+			results <- result{keyID: tc.key.id, value: value, err: err}
+		}()
+	}
+
+	started := make(map[int]bool)
+	for len(started) < 2 {
+		select {
+		case keyID := <-computeStarted:
+			started[keyID] = true
+		case <-time.After(time.Second):
+			releaseComputes()
+			t.Fatalf("expected both distinct keys to compute; started computes: %v", started)
+		}
+	}
+	releaseComputes()
+
+	got := make(map[int]string)
+	for i := 0; i < 2; i++ {
+		res := <-results
+		r.NoError(res.err)
+		got[res.keyID] = res.value
+	}
+
+	r.Equal(map[int]string{1: "value-1", 2: "value-2"}, got)
+
+	value, found := cache.Peek(collidingStringKey{id: 1})
+	r.True(found)
+	r.Equal("value-1", value)
+	value, found = cache.Peek(collidingStringKey{id: 2})
+	r.True(found)
+	r.Equal("value-2", value)
 }
