@@ -14,6 +14,12 @@ const DefaultShardCount = 16
 // It distributes keys across multiple Cache instances to reduce lock contention
 // under high concurrency. Each shard is an independent LRU cache with its own lock,
 // allowing concurrent operations on different shards.
+//
+// Sharded is not a global LRU cache. Capacity and recency are enforced per
+// shard, so a hot shard can evict entries while another shard has spare room.
+// Methods that return collections process shards in order and do not preserve
+// global recency across shards.
+//
 // A Sharded must be created with [NewSharded], [MustNewSharded], [NewShardedWithCount],
 // or [MustNewShardedWithCount]; the zero value is not ready for use.
 type Sharded[K comparable, V any] struct {
@@ -227,8 +233,13 @@ func (s *Sharded[K, V]) ShardCount() int {
 // OnEvict sets a callback function that will be called when an entry is evicted
 // from any shard. The callback will receive the key and value of the evicted entry.
 //
-// Warning: The callback may be invoked concurrently from multiple shards.
-// Ensure the callback is safe for concurrent use.
+// Calling OnEvict again replaces the callback used by all shards for future
+// removals. Passing nil clears the callback. A removal already in progress may
+// still invoke the callback that was current when that shard released its lock.
+//
+// Warning: The callback may be invoked concurrently from multiple shards and
+// from multiple goroutines operating on the same shard. It must be safe for
+// concurrent use.
 func (s *Sharded[K, V]) OnEvict(f OnEvictFunc[K, V]) {
 	for _, shard := range s.shards {
 		shard.OnEvict(f)

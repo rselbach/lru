@@ -447,6 +447,10 @@ func (c *Cache[K, V]) Capacity() int {
 // OnEvict sets a callback function that will be called when an entry is evicted from the cache.
 // The callback will receive the key and value of the evicted entry.
 //
+// Calling OnEvict again replaces the callback used for future removals. Passing
+// nil clears the callback. If an eviction is already in progress, it may still
+// invoke the callback that was current when that eviction released the cache lock.
+//
 // The callback is invoked after the cache's internal lock is released and may be called
 // concurrently from multiple goroutines. It must be safe for concurrent use.
 func (c *Cache[K, V]) OnEvict(f OnEvictFunc[K, V]) {

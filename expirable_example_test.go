@@ -156,6 +156,36 @@ func Example_lruAndExpiration() {
 	// After adding D: [D]
 }
 
+func ExampleExpirable_valuesAndOldest() {
+	now := time.Date(2023, 1, 1, 12, 0, 0, 0, time.UTC)
+	cache := lru.MustNewExpirable[string, int](4, time.Minute)
+	cache.SetTimeNowFunc(func() time.Time {
+		return now
+	})
+
+	cache.Set("expired", 1, lru.WithTTL(30*time.Second))
+	cache.Set("live-a", 2)
+	cache.Set("live-b", 3)
+	now = now.Add(31 * time.Second)
+
+	fmt.Printf("keys: %v\n", cache.Keys())
+	fmt.Printf("values: %v\n", cache.Values())
+
+	key, value, _ := cache.GetOldest()
+	fmt.Printf("oldest: %s=%d\n", key, value)
+
+	key, value, _ = cache.RemoveOldest()
+	fmt.Printf("removed: %s=%d\n", key, value)
+	fmt.Printf("keys after remove: %v\n", cache.Keys())
+
+	// Output:
+	// keys: [live-b live-a]
+	// values: [3 2]
+	// oldest: live-a=2
+	// removed: live-a=2
+	// keys after remove: [live-b]
+}
+
 // This example demonstrates using eviction callbacks with the Expirable cache.
 func Example_expirableEvictionCallback() {
 	// Create a timer simulation function for testing

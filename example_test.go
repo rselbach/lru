@@ -86,6 +86,98 @@ func Example_getOrSet() {
 	// Result: 100.0 (computed: true)
 }
 
+func ExampleCache_GetOrSetSingleflight() {
+	type requestKey struct {
+		userID string
+		page   int
+	}
+
+	cache := lru.MustNew[requestKey, string](10)
+	key := requestKey{userID: "user-42", page: 1}
+	computeCount := 0
+
+	getPage := func() (string, error) {
+		computeCount++
+		return fmt.Sprintf("profile-%s-page-%d", key.userID, key.page), nil
+	}
+
+	value, _ := cache.GetOrSetSingleflight(key, getPage)
+	fmt.Printf("%s (computed: %d)\n", value, computeCount)
+
+	value, _ = cache.GetOrSetSingleflight(key, getPage)
+	fmt.Printf("%s (computed: %d)\n", value, computeCount)
+
+	// Output:
+	// profile-user-42-page-1 (computed: 1)
+	// profile-user-42-page-1 (computed: 1)
+}
+
+func ExampleCache_Resize() {
+	cache := lru.MustNew[string, int](4)
+	cache.Set("a", 1)
+	cache.Set("b", 2)
+	cache.Set("c", 3)
+	cache.Set("d", 4)
+
+	evicted, _ := cache.Resize(2)
+
+	fmt.Printf("evicted: %d\n", evicted)
+	fmt.Printf("capacity: %d\n", cache.Capacity())
+	fmt.Printf("keys: %v\n", cache.Keys())
+
+	// Output:
+	// evicted: 2
+	// capacity: 2
+	// keys: [d c]
+}
+
+func ExampleCache_GetOldest() {
+	cache := lru.MustNew[string, int](3)
+	cache.Set("a", 1)
+	cache.Set("b", 2)
+	cache.Set("c", 3)
+
+	key, value, _ := cache.GetOldest()
+
+	fmt.Printf("oldest: %s=%d\n", key, value)
+	fmt.Printf("keys: %v\n", cache.Keys())
+
+	// Output:
+	// oldest: a=1
+	// keys: [c b a]
+}
+
+func ExampleCache_RemoveOldest() {
+	cache := lru.MustNew[string, int](3)
+	cache.Set("a", 1)
+	cache.Set("b", 2)
+	cache.Set("c", 3)
+
+	key, value, _ := cache.RemoveOldest()
+
+	fmt.Printf("removed: %s=%d\n", key, value)
+	fmt.Printf("keys: %v\n", cache.Keys())
+
+	// Output:
+	// removed: a=1
+	// keys: [c b]
+}
+
+func ExampleCache_Values() {
+	cache := lru.MustNew[string, int](3)
+	cache.Set("a", 1)
+	cache.Set("b", 2)
+	cache.Set("c", 3)
+	cache.Get("a")
+
+	fmt.Printf("keys: %v\n", cache.Keys())
+	fmt.Printf("values: %v\n", cache.Values())
+
+	// Output:
+	// keys: [a c b]
+	// values: [1 3 2]
+}
+
 // This example demonstrates eviction of items when the cache is at capacity.
 func Example_eviction() {
 	// Create a small cache with capacity of 2

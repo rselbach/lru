@@ -52,6 +52,13 @@
 // expired entries are purged before evicting a non-expired LRU entry. Call
 // [Expirable.RemoveExpired] to explicitly purge all expired entries.
 //
+// # Sharded Cache
+//
+// A [Sharded] cache splits total capacity across independent [Cache] instances
+// to reduce lock contention. It is not a global LRU: each shard enforces its own
+// capacity and recency order. Methods such as [Sharded.Keys] return a
+// point-in-time snapshot grouped by shard, not global recency order.
+//
 // # Eviction Callbacks
 //
 // Register a callback to be notified when entries are evicted:
@@ -61,11 +68,14 @@
 //	})
 //
 // Callbacks are invoked for capacity evictions, explicit removals via
-// [Cache.Remove], and [Cache.Clear]. For [Expirable.Clear], callbacks are
-// only invoked for entries that have not yet expired. However, capacity-based
-// evictions trigger the callback even if the evicted entry has already expired.
+// [Cache.Remove], [Cache.RemoveOldest], and [Cache.Clear]. For [Expirable.Clear],
+// callbacks are only invoked for entries that have not yet expired. Expired
+// entries removed by [Expirable.RemoveExpired] or capacity cleanup also trigger
+// callbacks.
 //
 // Callbacks are invoked after the cache's internal lock is released and may be
 // called concurrently from multiple goroutines. Callback implementations must
-// be safe for concurrent use.
+// be safe for concurrent use. Calling OnEvict again replaces the callback for
+// future removals; passing nil clears it. A removal already in progress may use
+// the callback that was current when that removal released the cache lock.
 package lru
