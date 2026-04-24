@@ -51,6 +51,8 @@
 // Expired entries are removed lazily on access. When a write needs capacity,
 // expired entries are purged before evicting a non-expired LRU entry. Call
 // [Expirable.RemoveExpired] to explicitly purge all expired entries.
+// Applications that want periodic background cleanup can opt in with
+// [Expirable.StartJanitor] and stop it with [Expirable.StopJanitor].
 //
 // # Sharded Cache
 //

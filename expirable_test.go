@@ -312,6 +312,134 @@ func TestExpirable_RemoveExpired(t *testing.T) {
 	r.Equal(0, cache.Len())
 }
 
+func TestExpirable_JanitorLifecycle(t *testing.T) {
+	r := require.New(t)
+	cache := MustNewExpirable[string, int](5, time.Minute)
+
+	r.Error(cache.StartJanitor(0))
+	r.Error(cache.StartJanitor(-time.Second))
+
+	r.NoError(cache.StartJanitor(5 * time.Millisecond))
+	r.NoError(cache.StartJanitor(5*time.Millisecond), "starting an already running janitor should be a no-op")
+
+	cache.StopJanitor()
+	cache.StopJanitor()
+
+	r.NoError(cache.StartJanitor(5 * time.Millisecond))
+	cache.StopJanitor()
+}
+
+func TestExpirable_JanitorRemovesExpired(t *testing.T) {
+	r := require.New(t)
+	cache := MustNewExpirable[string, int](5, time.Minute)
+
+	removed := make(chan string, 1)
+	cache.OnEvict(func(key string, _ int) {
+		cache.Len()
+		removed <- key
+	})
+
+	cache.Set("a", 1, WithTTL(5*time.Millisecond))
+
+	err := cache.StartJanitor(2 * time.Millisecond)
+	r.NoError(err)
+	defer cache.StopJanitor()
+
+	select {
+	case key := <-removed:
+		r.Equal("a", key)
+	case <-time.After(time.Second):
+		t.Fatal("janitor did not remove expired entry")
+	}
+
+	waitForExpirablePhysicalLen(t, cache, 0)
+}
+
+func TestExpirable_JanitorConcurrentOperations(t *testing.T) {
+	r := require.New(t)
+	cache := MustNewExpirable[int, int](100, 10*time.Millisecond)
+
+	err := cache.StartJanitor(time.Millisecond)
+	r.NoError(err)
+	defer cache.StopJanitor()
+
+	var wg sync.WaitGroup
+	for worker := 0; worker < 20; worker++ {
+		wg.Add(1)
+		go func(base int) {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				key := base*1000 + i
+				switch i % 7 {
+				case 0:
+					cache.Set(key, i, WithTTL(2*time.Millisecond))
+				case 1:
+					cache.Get(key)
+				case 2:
+					cache.Peek(key)
+				case 3:
+					cache.Contains(key)
+				case 4:
+					cache.Remove(key)
+				case 5:
+					cache.Keys()
+				default:
+					cache.Len()
+				}
+			}
+		}(worker)
+	}
+	wg.Wait()
+}
+
+func TestExpirable_JanitorConcurrentStartStop(t *testing.T) {
+	r := require.New(t)
+	cache := MustNewExpirable[int, int](10, time.Minute)
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 50)
+	for i := 0; i < 50; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			if err := cache.StartJanitor(time.Millisecond); err != nil {
+				errs <- err
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			cache.StopJanitor()
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	cache.StopJanitor()
+
+	for err := range errs {
+		r.NoError(err)
+	}
+}
+
+func waitForExpirablePhysicalLen[K comparable, V any](t *testing.T, cache *Expirable[K, V], want int) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		cache.mu.RLock()
+		got := len(cache.items)
+		cache.mu.RUnlock()
+		if got == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	cache.mu.RLock()
+	got := len(cache.items)
+	cache.mu.RUnlock()
+	t.Fatalf("expected physical len %d, got %d", want, got)
+}
+
 func TestExpirable_SetTTL(t *testing.T) {
 	r := require.New(t)
 	mockClock := newMockTime()

@@ -186,6 +186,31 @@ func ExampleExpirable_valuesAndOldest() {
 	// keys after remove: [live-b]
 }
 
+func ExampleExpirable_StartJanitor() {
+	cache := lru.MustNewExpirable[string, int](2, time.Minute)
+	evicted := make(chan string, 1)
+	cache.OnEvict(func(key string, _ int) {
+		evicted <- key
+	})
+
+	cache.Set("short-lived", 1, lru.WithTTL(time.Millisecond))
+	if err := cache.StartJanitor(time.Millisecond); err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	defer cache.StopJanitor()
+
+	select {
+	case key := <-evicted:
+		fmt.Println(key)
+	case <-time.After(time.Second):
+		fmt.Println("timeout")
+	}
+
+	// Output:
+	// short-lived
+}
+
 // This example demonstrates using eviction callbacks with the Expirable cache.
 func Example_expirableEvictionCallback() {
 	// Create a timer simulation function for testing

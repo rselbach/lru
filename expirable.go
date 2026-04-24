@@ -29,6 +29,10 @@ type Expirable[K comparable, V any] struct {
 	timeNow  func() time.Time  // for testing
 	onEvict  OnEvictFunc[K, V] // callback for evictions
 	sfGroup  flightGroup[K, V]
+
+	janitorMu   sync.Mutex
+	janitorStop chan struct{}
+	janitorDone chan struct{}
 }
 
 // setOptions holds optional parameters for Set operations.
@@ -707,6 +711,66 @@ func (c *Expirable[K, V]) SetTTL(ttl time.Duration) error {
 
 	c.ttl = ttl
 	return nil
+}
+
+// StartJanitor starts a background goroutine that periodically removes expired entries.
+// Lazy expiration remains the default; the janitor only runs after this method is called.
+//
+// The interval must be greater than zero. Calling StartJanitor while the janitor
+// is already running is a no-op.
+func (c *Expirable[K, V]) StartJanitor(interval time.Duration) error {
+	if interval <= 0 {
+		return errors.New("janitor interval must be greater than zero")
+	}
+
+	c.janitorMu.Lock()
+	defer c.janitorMu.Unlock()
+
+	if c.janitorStop != nil {
+		return nil
+	}
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	c.janitorStop = stop
+	c.janitorDone = done
+
+	go c.runJanitor(interval, stop, done)
+	return nil
+}
+
+func (c *Expirable[K, V]) runJanitor(interval time.Duration, stop <-chan struct{}, done chan<- struct{}) {
+	ticker := time.NewTicker(interval)
+	defer func() {
+		ticker.Stop()
+		close(done)
+	}()
+
+	for {
+		select {
+		case <-ticker.C:
+			c.RemoveExpired()
+		case <-stop:
+			return
+		}
+	}
+}
+
+// StopJanitor stops the background expiry cleanup goroutine if it is running.
+// Calling StopJanitor when the janitor is not running is a no-op. StopJanitor
+// waits for the goroutine to exit before returning.
+func (c *Expirable[K, V]) StopJanitor() {
+	c.janitorMu.Lock()
+	defer c.janitorMu.Unlock()
+
+	if c.janitorStop == nil {
+		return
+	}
+
+	close(c.janitorStop)
+	<-c.janitorDone
+	c.janitorStop = nil
+	c.janitorDone = nil
 }
 
 // OnEvict sets a callback function that will be called when an entry is evicted from the cache.
