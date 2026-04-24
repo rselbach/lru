@@ -1,6 +1,8 @@
 package lru
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -80,6 +82,52 @@ func TestCache_OnEvictReplacement(t *testing.T) {
 	// No callback should be called
 	r.Equal(map[string]int{"a": 1}, evicted1)
 	r.Equal(map[string]int{"b": 2}, evicted2)
+}
+
+func TestCache_OnEvictConcurrentReplacement(t *testing.T) {
+	r := require.New(t)
+	cache := MustNew[int, int](1)
+	cache.Set(0, 0)
+
+	var callback1Calls int32
+	var callback2Calls int32
+	callback1 := func(int, int) {
+		atomic.AddInt32(&callback1Calls, 1)
+		cache.Len()
+	}
+	callback2 := func(int, int) {
+		atomic.AddInt32(&callback2Calls, 1)
+		cache.Contains(0)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 1000; i++ {
+			switch i % 3 {
+			case 0:
+				cache.OnEvict(callback1)
+			case 1:
+				cache.OnEvict(callback2)
+			default:
+				cache.OnEvict(nil)
+			}
+		}
+	}()
+
+	for worker := 0; worker < 8; worker++ {
+		wg.Add(1)
+		go func(base int) {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				cache.Set(base*1000+i+1, i)
+			}
+		}(worker)
+	}
+	wg.Wait()
+
+	r.LessOrEqual(cache.Len(), cache.Capacity())
 }
 
 func TestExpirable_OnEvict(t *testing.T) {
@@ -177,4 +225,99 @@ func TestExpirable_Clear(t *testing.T) {
 	// Clear should only call callback for non-expired items
 	cache.Clear()
 	r.Equal(map[string]int{"c": 30}, evicted)
+}
+
+func TestExpirable_OnEvictConcurrentReplacement(t *testing.T) {
+	r := require.New(t)
+	cache := MustNewExpirable[int, int](1, time.Hour)
+	cache.Set(0, 0)
+
+	var callback1Calls int32
+	var callback2Calls int32
+	callback1 := func(int, int) {
+		atomic.AddInt32(&callback1Calls, 1)
+		cache.Len()
+	}
+	callback2 := func(int, int) {
+		atomic.AddInt32(&callback2Calls, 1)
+		cache.Contains(0)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 1000; i++ {
+			switch i % 3 {
+			case 0:
+				cache.OnEvict(callback1)
+			case 1:
+				cache.OnEvict(callback2)
+			default:
+				cache.OnEvict(nil)
+			}
+		}
+	}()
+
+	for worker := 0; worker < 8; worker++ {
+		wg.Add(1)
+		go func(base int) {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				cache.Set(base*1000+i+1, i)
+			}
+		}(worker)
+	}
+	wg.Wait()
+
+	r.LessOrEqual(cache.Len(), cache.Capacity())
+}
+
+func TestSharded_OnEvictConcurrentReplacement(t *testing.T) {
+	r := require.New(t)
+	cache := MustNewShardedWithCount[int, int](4, 4)
+
+	for i := 0; i < cache.Capacity(); i++ {
+		cache.Set(i, i)
+	}
+
+	var callback1Calls int32
+	var callback2Calls int32
+	callback1 := func(int, int) {
+		atomic.AddInt32(&callback1Calls, 1)
+		cache.Len()
+	}
+	callback2 := func(int, int) {
+		atomic.AddInt32(&callback2Calls, 1)
+		cache.Contains(0)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 1000; i++ {
+			switch i % 3 {
+			case 0:
+				cache.OnEvict(callback1)
+			case 1:
+				cache.OnEvict(callback2)
+			default:
+				cache.OnEvict(nil)
+			}
+		}
+	}()
+
+	for worker := 0; worker < 8; worker++ {
+		wg.Add(1)
+		go func(base int) {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				cache.Set(base*1000+i+cache.Capacity(), i)
+			}
+		}(worker)
+	}
+	wg.Wait()
+
+	r.LessOrEqual(cache.Len(), cache.Capacity())
 }
