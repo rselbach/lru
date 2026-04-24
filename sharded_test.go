@@ -791,6 +791,127 @@ func TestSharded_CapacityDistribution(t *testing.T) {
 	}
 }
 
+func TestSharded_Resize(t *testing.T) {
+	r := require.New(t)
+	cache := MustNewShardedWithCount[int, int](4, 2)
+
+	r.Equal([]int{2, 2}, shardedShardCapacities(cache))
+
+	evicted, err := cache.Resize(6)
+	r.NoError(err)
+	r.Equal(0, evicted)
+	r.Equal(6, cache.Capacity())
+	r.Equal(2, cache.ShardCount())
+	r.Equal([]int{3, 3}, shardedShardCapacities(cache))
+
+	evicted, err = cache.Resize(5)
+	r.NoError(err)
+	r.Equal(0, evicted)
+	r.Equal(5, cache.Capacity())
+	r.Equal(2, cache.ShardCount())
+	r.Equal([]int{3, 2}, shardedShardCapacities(cache))
+
+	evicted, err = cache.Resize(1)
+	r.Error(err)
+	r.Equal(0, evicted)
+	r.Equal(5, cache.Capacity())
+	r.Equal([]int{3, 2}, shardedShardCapacities(cache))
+}
+
+func TestSharded_ResizeEvictsPerShard(t *testing.T) {
+	r := require.New(t)
+	cache := MustNewShardedWithCount[int, int](6, 2)
+
+	for shardIdx := range cache.shards {
+		keys := keysForShard(cache, shardIdx, 3)
+		for _, key := range keys {
+			cache.Set(key, key)
+		}
+	}
+
+	var evictedKeys []int
+	var mu sync.Mutex
+	cache.OnEvict(func(key int, _ int) {
+		mu.Lock()
+		evictedKeys = append(evictedKeys, key)
+		mu.Unlock()
+		cache.Len()
+	})
+
+	evicted, err := cache.Resize(4)
+	r.NoError(err)
+	r.Equal(2, evicted)
+	r.Equal(4, cache.Capacity())
+	r.Equal([]int{2, 2}, shardedShardCapacities(cache))
+
+	for _, shard := range cache.shards {
+		r.LessOrEqual(shard.Len(), shard.Capacity())
+	}
+
+	mu.Lock()
+	r.Len(evictedKeys, 2)
+	mu.Unlock()
+}
+
+func TestSharded_ResizeConcurrentAccess(t *testing.T) {
+	r := require.New(t)
+	cache := MustNewShardedWithCount[int, int](16, 4)
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 20*100)
+	for worker := 0; worker < 20; worker++ {
+		wg.Add(1)
+		go func(base int) {
+			defer wg.Done()
+			for i := 0; i < 100; i++ {
+				key := base*1000 + i
+				switch i % 4 {
+				case 0:
+					cache.Set(key, i)
+				case 1:
+					cache.Get(key)
+				case 2:
+					cache.Contains(key)
+				default:
+					_, err := cache.Resize(8 + i%16)
+					if err != nil {
+						errs <- err
+					}
+				}
+			}
+		}(worker)
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		r.NoError(err)
+	}
+
+	r.LessOrEqual(cache.Len(), cache.Capacity())
+	for _, shard := range cache.shards {
+		r.LessOrEqual(shard.Len(), shard.Capacity())
+	}
+}
+
+func shardedShardCapacities[K comparable, V any](cache *Sharded[K, V]) []int {
+	capacities := make([]int, len(cache.shards))
+	for i, shard := range cache.shards {
+		capacities[i] = shard.Capacity()
+	}
+	return capacities
+}
+
+func keysForShard[V any](cache *Sharded[int, V], shardIdx, count int) []int {
+	keys := make([]int, 0, count)
+	for key := 0; len(keys) < count; key++ {
+		if cache.shardIndex(key) == shardIdx {
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}
+
 func TestSharded_OnEvictCalledOutsideLock(t *testing.T) {
 	r := require.New(t)
 	cache := MustNewShardedWithCount[int, int](2, 1)

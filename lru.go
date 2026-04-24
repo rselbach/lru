@@ -208,6 +208,17 @@ func (c *Cache[K, V]) Resize(capacity int) (int, error) {
 
 	c.mu.Lock()
 	onEvict := c.onEvict
+	evicted, evictedCount := c.resizeLocked(capacity, onEvict != nil)
+	c.mu.Unlock()
+
+	for _, e := range evicted {
+		onEvict(e.key, e.val)
+	}
+
+	return evictedCount, nil
+}
+
+func (c *Cache[K, V]) resizeLocked(capacity int, collectEvicted bool) ([]entry[K, V], int) {
 	var evicted []entry[K, V]
 	evictedCount := 0
 
@@ -216,7 +227,7 @@ func (c *Cache[K, V]) Resize(capacity int) (int, error) {
 		if oldest == nil {
 			break
 		}
-		if onEvict != nil {
+		if collectEvicted {
 			evicted = append(evicted, *oldest)
 		}
 		delete(c.items, oldest.key)
@@ -225,13 +236,7 @@ func (c *Cache[K, V]) Resize(capacity int) (int, error) {
 	}
 
 	c.capacity = capacity
-	c.mu.Unlock()
-
-	for _, e := range evicted {
-		onEvict(e.key, e.val)
-	}
-
-	return evictedCount, nil
+	return evicted, evictedCount
 }
 
 // setLocked is an internal method that adds or updates an item in the cache.

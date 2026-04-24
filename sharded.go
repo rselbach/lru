@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/maphash"
+	"sync"
 )
 
 // DefaultShardCount is the default number of shards for a Sharded cache.
@@ -25,7 +26,8 @@ const DefaultShardCount = 16
 type Sharded[K comparable, V any] struct {
 	shards   []*Cache[K, V]
 	seed     maphash.Seed
-	capacity int // total capacity across all shards
+	mu       sync.RWMutex // protects capacity updates and serializes Resize
+	capacity int          // total capacity across all shards
 }
 
 // NewSharded creates a new sharded LRU cache with the given total capacity.
@@ -222,12 +224,74 @@ func (s *Sharded[K, V]) Keys() []K {
 
 // Capacity returns the maximum total capacity of the cache.
 func (s *Sharded[K, V]) Capacity() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	return s.capacity
 }
 
 // ShardCount returns the number of shards in the cache.
 func (s *Sharded[K, V]) ShardCount() int {
 	return len(s.shards)
+}
+
+type shardedEviction[K comparable, V any] struct {
+	onEvict OnEvictFunc[K, V]
+	key     K
+	value   V
+}
+
+// Resize changes the maximum total capacity of the cache while preserving the
+// existing shard count. The capacity is redistributed across shards using the
+// same even distribution as construction, with any remainder assigned to the
+// first shards. The new capacity must be at least the current shard count so
+// every shard keeps at least one slot.
+func (s *Sharded[K, V]) Resize(capacity int) (int, error) {
+	if capacity <= 0 {
+		return 0, errors.New("capacity must be greater than zero")
+	}
+
+	shardCount := len(s.shards)
+	if capacity < shardCount {
+		return 0, fmt.Errorf("capacity must be at least shard count (%d)", shardCount)
+	}
+
+	s.mu.Lock()
+	perShard := capacity / shardCount
+	remainder := capacity % shardCount
+	evicted := 0
+	var evictions []shardedEviction[K, V]
+
+	for i, shard := range s.shards {
+		shardCap := perShard
+		if i < remainder {
+			shardCap++
+		}
+		shard.mu.Lock()
+		onEvict := shard.onEvict
+		removed, shardEvicted := shard.resizeLocked(shardCap, onEvict != nil)
+		shard.mu.Unlock()
+
+		evicted += shardEvicted
+		if onEvict != nil {
+			for _, e := range removed {
+				evictions = append(evictions, shardedEviction[K, V]{
+					onEvict: onEvict,
+					key:     e.key,
+					value:   e.val,
+				})
+			}
+		}
+	}
+
+	s.capacity = capacity
+	s.mu.Unlock()
+
+	for _, eviction := range evictions {
+		eviction.onEvict(eviction.key, eviction.value)
+	}
+
+	return evicted, nil
 }
 
 // OnEvict sets a callback function that will be called when an entry is evicted
