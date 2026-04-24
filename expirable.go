@@ -52,6 +52,17 @@ func WithTTL(ttl time.Duration) SetOption {
 	}
 }
 
+func (c *Expirable[K, V]) ttlForSet(opt setOptions) time.Duration {
+	if opt.ttl > 0 {
+		return opt.ttl
+	}
+
+	c.mu.RLock()
+	ttl := c.ttl
+	c.mu.RUnlock()
+	return ttl
+}
+
 // NewExpirable creates a new LRU cache with the given capacity and TTL.
 // Each entry expires a fixed duration after it is written via Set or GetOrSet.
 // Reads (Get, Peek, GetWithTTL) do not extend an entry's TTL.
@@ -204,10 +215,7 @@ func (c *Expirable[K, V]) GetOrSet(key K, compute func() (V, error), opts ...Set
 	for _, o := range opts {
 		o(&opt)
 	}
-	ttl := c.ttl
-	if opt.ttl > 0 {
-		ttl = opt.ttl
-	}
+	ttl := c.ttlForSet(opt)
 
 	// compute the value outside the lock to avoid deadlock if compute
 	// calls back into the cache
@@ -269,10 +277,7 @@ func (c *Expirable[K, V]) GetOrSetSingleflight(key K, compute func() (V, error),
 	for _, o := range opts {
 		o(&opt)
 	}
-	ttl := c.ttl
-	if opt.ttl > 0 {
-		ttl = opt.ttl
-	}
+	ttl := c.ttlForSet(opt)
 
 	// use singleflight to deduplicate concurrent computes for the same typed key
 	result, err := c.sfGroup.Do(key, func() (V, error) {
@@ -341,11 +346,7 @@ func (c *Expirable[K, V]) Set(key K, value V, opts ...SetOption) {
 	for _, o := range opts {
 		o(&opt)
 	}
-
-	ttl := c.ttl
-	if opt.ttl > 0 {
-		ttl = opt.ttl
-	}
+	ttl := c.ttlForSet(opt)
 
 	c.mu.Lock()
 	onEvict := c.onEvict

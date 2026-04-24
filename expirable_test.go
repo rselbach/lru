@@ -470,6 +470,68 @@ func TestExpirable_SetTTL(t *testing.T) {
 	r.False(cache.Contains("a"))
 }
 
+func TestExpirable_SetTTLConcurrentWrites(t *testing.T) {
+	cache := MustNewExpirable[int, int](128, time.Minute)
+
+	const iterations = 1000
+
+	start := make(chan struct{})
+	done := make(chan struct{})
+
+	var ttlWG sync.WaitGroup
+	ttlWG.Add(1)
+	go func() {
+		defer ttlWG.Done()
+		<-start
+		for i := 0; ; i++ {
+			select {
+			case <-done:
+				return
+			default:
+			}
+
+			ttl := time.Duration(i%10+1) * time.Second
+			if err := cache.SetTTL(ttl); err != nil {
+				panic(err)
+			}
+		}
+	}()
+
+	var writerWG sync.WaitGroup
+	for worker := 0; worker < 6; worker++ {
+		writerWG.Add(1)
+		go func(worker int) {
+			defer writerWG.Done()
+			<-start
+			base := worker * iterations * 10
+			for i := 0; i < iterations; i++ {
+				key := base + i
+				switch worker % 3 {
+				case 0:
+					cache.Set(key, i)
+				case 1:
+					if _, err := cache.GetOrSet(key, func() (int, error) {
+						return i, nil
+					}); err != nil {
+						panic(err)
+					}
+				default:
+					if _, err := cache.GetOrSetSingleflight(key, func() (int, error) {
+						return i, nil
+					}); err != nil {
+						panic(err)
+					}
+				}
+			}
+		}(worker)
+	}
+
+	close(start)
+	writerWG.Wait()
+	close(done)
+	ttlWG.Wait()
+}
+
 func TestExpirable_LRUEviction(t *testing.T) {
 	r := require.New(t)
 	mockClock := newMockTime()
