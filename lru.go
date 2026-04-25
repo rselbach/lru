@@ -242,13 +242,19 @@ func (c *Cache[K, V]) resizeLocked(capacity int, collectEvicted bool) ([]entry[K
 // setLocked is an internal method that adds or updates an item in the cache.
 // it assumes the mutex is already locked.
 // Returns the evicted key/value and whether an eviction occurred.
-func (c *Cache[K, V]) setLocked(key K, value V) (evictedKey K, evictedVal V, evicted bool) {
+func (c *Cache[K, V]) setLocked(key K, value V) (K, V, bool) {
 	// if key exists, update value and move to front
 	if e, found := c.items[key]; found {
 		c.moveToFront(e)
 		e.val = value
-		return
+		var zeroK K
+		var zeroV V
+		return zeroK, zeroV, false
 	}
+
+	var evictedKey K
+	var evictedVal V
+	var evicted bool
 
 	// if we're at capacity, remove the least recently used item
 	if len(c.items) >= c.capacity {
@@ -269,7 +275,7 @@ func (c *Cache[K, V]) setLocked(key K, value V) (evictedKey K, evictedVal V, evi
 	}
 	c.pushFront(e)
 	c.items[key] = e
-	return
+	return evictedKey, evictedVal, evicted
 }
 
 // moveToFront moves an entry to the front of the list.
