@@ -189,9 +189,6 @@ func (c *Expirable[K, V]) GetWithTTL(key K) (V, time.Duration, bool) {
 
 	// calculate remaining TTL
 	ttl := e.expiry.Sub(now)
-	if ttl < 0 {
-		ttl = 0
-	}
 	val := e.val
 	c.mu.Unlock()
 
@@ -810,16 +807,22 @@ func (c *Expirable[K, V]) RemoveExpired() int {
 	c.mu.Lock()
 
 	now := c.timeNow()
+	onEvict := c.onEvict
 	removed := 0
 
-	expiredItems := make([]K, 0)
-	expiredValues := make([]V, 0)
-
+	var expired []struct {
+		key K
+		val V
+	}
 	for e := c.head; e != nil; {
 		next := e.next
 		if now.After(e.expiry) {
-			expiredItems = append(expiredItems, e.key)
-			expiredValues = append(expiredValues, e.val)
+			if onEvict != nil {
+				expired = append(expired, struct {
+					key K
+					val V
+				}{key: e.key, val: e.val})
+			}
 			delete(c.items, e.key)
 			c.removeEntry(e)
 			removed++
@@ -827,12 +830,11 @@ func (c *Expirable[K, V]) RemoveExpired() int {
 		e = next
 	}
 
-	onEvict := c.onEvict
 	c.mu.Unlock()
 
 	if onEvict != nil {
-		for i := range expiredItems {
-			onEvict(expiredItems[i], expiredValues[i])
+		for _, e := range expired {
+			onEvict(e.key, e.val)
 		}
 	}
 
