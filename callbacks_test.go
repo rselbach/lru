@@ -193,6 +193,34 @@ func TestExpirable_OnEvict(t *testing.T) {
 	r.Equal(map[string]int{"e": 5, "f": 6, "g": 7}, evicted)
 }
 
+func TestExpirable_SetOverExpiredEntryFiresOnEvict(t *testing.T) {
+	r := require.New(t)
+	mockClock := newMockTime()
+
+	cache := MustNewExpirable[string, int](3, time.Minute)
+	cache.SetTimeNowFunc(mockClock.Now)
+
+	evicted := make(map[string]int)
+	cache.OnEvict(func(key string, value int) {
+		evicted[key] = value
+	})
+
+	cache.Set("a", 1)
+	mockClock.Add(time.Minute + time.Second) // "a" is now expired
+
+	// updating an expired key replaces a dead value; the callback must fire
+	cache.Set("a", 2)
+	r.Equal(map[string]int{"a": 1}, evicted)
+
+	val, found := cache.Get("a")
+	r.True(found)
+	r.Equal(2, val)
+
+	// updating a live key is a plain update, no callback
+	cache.Set("a", 3)
+	r.Equal(map[string]int{"a": 1}, evicted)
+}
+
 func TestExpirable_Clear(t *testing.T) {
 	r := require.New(t)
 	mockClock := newMockTime()

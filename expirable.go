@@ -329,7 +329,8 @@ func (c *Expirable[K, V]) GetOrSetSingleflight(key K, compute func() (V, error),
 }
 
 // Set adds or updates an item in the cache.
-// If the key already exists, its value is updated.
+// If the key already exists, its value is updated; if that existing entry had
+// already expired, the eviction callback is invoked for the replaced value.
 // If the cache is at capacity, the least recently used item is evicted.
 // If a new key would exceed capacity, expired entries are removed before
 // evicting a non-expired least recently used entry. Otherwise expired items are
@@ -399,10 +400,16 @@ func (c *Expirable[K, V]) Resize(capacity int) (int, error) {
 func (c *Expirable[K, V]) setLocked(key K, value V, ttl time.Duration, collectEvicted bool) []evictedItem[K, V] {
 	// if key exists, update value and expiry and move to front
 	if e, found := c.items[key]; found {
+		var evicted []evictedItem[K, V]
+		// replacing an expired entry retires its dead value, so report it to
+		// the eviction callback like any other expiry removal
+		if collectEvicted && c.timeNow().After(e.expiry) {
+			evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
+		}
 		c.moveToFront(e)
 		e.val = value
 		e.expiry = c.timeNow().Add(ttl)
-		return nil
+		return evicted
 	}
 
 	var evicted []evictedItem[K, V]
