@@ -516,6 +516,33 @@ func TestSharded_DifferentKeyTypes(t *testing.T) {
 		r.Equal("answer", val)
 	})
 
+	t.Run("int32 keys", func(t *testing.T) {
+		r := require.New(t)
+		cache := MustNewSharded[int32, string](100)
+		cache.Set(int32(-42), "answer")
+		val, found := cache.Get(int32(-42))
+		r.True(found)
+		r.Equal("answer", val)
+	})
+
+	t.Run("uint keys", func(t *testing.T) {
+		r := require.New(t)
+		cache := MustNewSharded[uint, string](100)
+		cache.Set(uint(42), "answer")
+		val, found := cache.Get(uint(42))
+		r.True(found)
+		r.Equal("answer", val)
+	})
+
+	t.Run("uint32 keys", func(t *testing.T) {
+		r := require.New(t)
+		cache := MustNewSharded[uint32, string](100)
+		cache.Set(uint32(42), "answer")
+		val, found := cache.Get(uint32(42))
+		r.True(found)
+		r.Equal("answer", val)
+	})
+
 	t.Run("uint64 keys", func(t *testing.T) {
 		r := require.New(t)
 		cache := MustNewSharded[uint64, string](100)
@@ -831,6 +858,30 @@ func TestSharded_Resize(t *testing.T) {
 	r.Equal(0, evicted)
 	r.Equal(5, cache.Capacity())
 	r.Equal([]int{3, 2}, shardedShardCapacities(cache))
+}
+
+func TestSharded_ResizeGrowPreservesEntries(t *testing.T) {
+	r := require.New(t)
+	cache := MustNewShardedWithCount[int, int](4, 2)
+
+	// fill each shard to its capacity so growth is exercised on full shards
+	var all []int
+	for shardIdx := range cache.shards {
+		keys := keysForShard(cache, shardIdx, 2)
+		for _, key := range keys {
+			cache.Set(key, key)
+		}
+		all = append(all, keys...)
+	}
+
+	evicted, err := cache.Resize(8)
+	r.NoError(err)
+	r.Equal(0, evicted)
+	r.Equal(8, cache.Capacity())
+	r.Equal([]int{4, 4}, shardedShardCapacities(cache))
+	for _, key := range all {
+		r.True(cache.Contains(key), "key %d must survive growing the cache", key)
+	}
 }
 
 func TestSharded_ResizeEvictsPerShard(t *testing.T) {

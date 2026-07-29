@@ -1273,22 +1273,68 @@ func TestExpirable_WithTTL_GetOrSetSingleflight(t *testing.T) {
 	r.False(cache.Contains("key"))
 }
 
-func TestExpirable_WithTTL_ZeroUsesDefault(t *testing.T) {
+func TestExpirable_WithTTL_NonPositiveUsesDefault(t *testing.T) {
+	tests := map[string]struct {
+		ttl time.Duration
+	}{
+		"zero":     {ttl: 0},
+		"negative": {ttl: -time.Second},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			mockClock := newMockTime()
+
+			cache, err := NewExpirable[string, int](5, time.Minute)
+			r.NoError(err)
+			cache.SetTimeNowFunc(mockClock.Now)
+
+			// a non-positive TTL should fall back to the default TTL
+			cache.Set("key", 42, WithTTL(tc.ttl))
+
+			// should still be there at 55 seconds
+			mockClock.Add(55 * time.Second)
+			r.True(cache.Contains("key"))
+
+			// should be gone at 65 seconds (past 1 minute default)
+			mockClock.Add(10 * time.Second)
+			r.False(cache.Contains("key"))
+		})
+	}
+}
+
+func TestExpirable_SetTimeNowFunc_NilResetsToRealTime(t *testing.T) {
 	r := require.New(t)
 	mockClock := newMockTime()
 
-	cache, err := NewExpirable[string, int](5, time.Minute)
-	r.NoError(err)
+	cache := MustNewExpirable[string, int](5, time.Hour)
 	cache.SetTimeNowFunc(mockClock.Now)
 
-	// WithTTL(0) should use default TTL
-	cache.Set("key", 42, WithTTL(0))
+	cache.Set("a", 1)
+	mockClock.Add(2 * time.Hour)
+	r.False(cache.Contains("a"), "entry must be expired under the mock clock")
 
-	// should still be there at 55 seconds
-	mockClock.Add(55 * time.Second)
-	r.True(cache.Contains("key"))
+	// resetting to the real clock revives the entry: its expiry is one hour
+	// after the mock start time, which is (roughly) the real present
+	cache.SetTimeNowFunc(nil)
+	r.True(cache.Contains("a"))
+}
 
-	// should be gone at 65 seconds (past 1 minute default)
-	mockClock.Add(10 * time.Second)
-	r.False(cache.Contains("key"))
+func TestExpirable_GetOldest_AllExpired(t *testing.T) {
+	r := require.New(t)
+	mockClock := newMockTime()
+
+	cache := MustNewExpirable[string, int](5, time.Minute)
+	cache.SetTimeNowFunc(mockClock.Now)
+
+	cache.Set("a", 1)
+	cache.Set("b", 2)
+	mockClock.Add(time.Minute + time.Second)
+
+	key, value, ok := cache.GetOldest()
+	r.False(ok)
+	r.Empty(key)
+	r.Zero(value)
+	r.Len(cache.items, 2, "GetOldest should not purge expired entries")
 }

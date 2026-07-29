@@ -178,6 +178,38 @@ func TestCache_GetSet(t *testing.T) {
 	}
 }
 
+func TestCache_CapacityOne(t *testing.T) {
+	r := require.New(t)
+	cache := MustNew[string, int](1)
+
+	cache.Set("a", 1)
+	cache.Set("b", 2) // evicts "a"
+
+	r.False(cache.Contains("a"))
+	val, found := cache.Get("b")
+	r.True(found)
+	r.Equal(2, val)
+	r.Equal(1, cache.Len())
+}
+
+func TestCache_SetExistingKeyUpdatesRecency(t *testing.T) {
+	r := require.New(t)
+	cache := MustNew[string, int](3)
+
+	cache.Set("a", 1)
+	cache.Set("b", 2)
+	cache.Set("c", 3)
+
+	// updating "a" must also move it to the front
+	cache.Set("a", 10)
+	r.Equal([]string{"a", "c", "b"}, cache.Keys())
+
+	// so a subsequent eviction removes "b", not "a"
+	cache.Set("d", 4)
+	r.False(cache.Contains("b"))
+	r.Equal([]string{"d", "a", "c"}, cache.Keys())
+}
+
 func TestCache_Remove(t *testing.T) {
 	tests := map[string]struct {
 		setup    map[string]int
@@ -407,6 +439,32 @@ func TestCache_Clear(t *testing.T) {
 	r.Equal(0, cache.Len())
 	_, found := cache.Get("a")
 	r.False(found)
+}
+
+func TestCache_Clear_CallbackAfterUnlock(t *testing.T) {
+	r := require.New(t)
+	cache := MustNew[string, int](2)
+	cache.Set("a", 1)
+	cache.Set("b", 2)
+
+	callbackLen := make(chan int, 2)
+	cache.OnEvict(func(string, int) {
+		callbackLen <- cache.Len()
+	})
+
+	done := make(chan struct{})
+	go func() {
+		cache.Clear()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		r.Equal(0, <-callbackLen)
+		r.Equal(0, <-callbackLen)
+	case <-time.After(time.Second):
+		t.Fatal("Clear callback appears to have run while the cache lock was held")
+	}
 }
 
 func TestCache_Resize(t *testing.T) {
