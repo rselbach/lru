@@ -132,8 +132,8 @@ func (s *Sharded[K, V]) shardIndex(key K) int {
 		binary.LittleEndian.PutUint64(buf[:], uint64(k))
 		h.Write(buf[:])
 	default:
-		// fallback for other comparable types
-		h.WriteString(fmt.Sprint(key))
+		// fallback for other comparable types; maphash never returns an error
+		_, _ = fmt.Fprint(&h, key)
 	}
 
 	return int(h.Sum64() % uint64(len(s.shards)))
