@@ -12,16 +12,17 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: [ '1.24', '1.25' ]
+        # 1.18 is the minimum version declared in go.mod
+        go-version: [ '1.18', '1.24', '1.25' ]
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v5
 
     - name: Set up Go
-      uses: actions/setup-go@v4
+      uses: actions/setup-go@v6
       with:
         go-version: ${{ matrix.go-version }}
 
     - name: Run tests
-      run: go test -v -cover ./...
+      run: go test -race -v -cover ./...
