@@ -73,7 +73,8 @@
 // [Cache.Remove], [Cache.RemoveOldest], and [Cache.Clear]. For [Expirable.Clear],
 // callbacks are only invoked for entries that have not yet expired. Expired
 // entries removed by [Expirable.RemoveExpired] or capacity cleanup also trigger
-// callbacks.
+// callbacks. Resize and Clear report evicted entries in order from least
+// recently used to most recently used.
 //
 // Callbacks are invoked after the cache's internal lock is released and may be
 // called concurrently from multiple goroutines. Callback implementations must

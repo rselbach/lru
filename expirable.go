@@ -611,7 +611,8 @@ func (c *Expirable[K, V]) Len() int {
 // Clear removes all items from the cache.
 //
 // If an eviction callback is set, it is called only for entries that have not
-// yet expired at the time of clearing.
+// yet expired at the time of clearing, in order from least recently used to
+// most recently used, matching [Expirable.Resize].
 func (c *Expirable[K, V]) Clear() {
 	c.mu.Lock()
 	onEvict := c.onEvict
@@ -620,7 +621,7 @@ func (c *Expirable[K, V]) Clear() {
 	if onEvict != nil {
 		now := c.timeNow()
 		evicted = make([]evictedItem[K, V], 0, len(c.items))
-		for e := c.head; e != nil; e = e.next {
+		for e := c.tail; e != nil; e = e.prev {
 			if !now.After(e.expiry) {
 				evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
 			}

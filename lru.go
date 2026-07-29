@@ -395,6 +395,9 @@ func (c *Cache[K, V]) Len() int {
 }
 
 // Clear removes all items from the cache.
+//
+// If an eviction callback is set, entries are reported in order from least
+// recently used to most recently used, matching [Cache.Resize].
 func (c *Cache[K, V]) Clear() {
 	c.mu.Lock()
 	onEvict := c.onEvict
@@ -402,7 +405,7 @@ func (c *Cache[K, V]) Clear() {
 	var evicted []evictedItem[K, V]
 	if onEvict != nil {
 		evicted = make([]evictedItem[K, V], 0, len(c.items))
-		for e := c.head; e != nil; e = e.next {
+		for e := c.tail; e != nil; e = e.prev {
 			evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
 		}
 	}

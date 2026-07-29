@@ -246,8 +246,8 @@ func Example_evictionCallback() {
 	// Output:
 	// Evicted: a=1
 	// Evicted: b=2
-	// Evicted: d=4
 	// Evicted: c=3
-	// All evicted keys: [a b d c]
-	// All evicted values: [1 2 4 3]
+	// Evicted: d=4
+	// All evicted keys: [a b c d]
+	// All evicted values: [1 2 3 4]
 }
