@@ -219,7 +219,7 @@ func TestCache_Remove(t *testing.T) {
 
 			// verify key is gone
 			_, found := cache.Get(tc.toRemove)
-			r.Equal(false, found)
+			r.False(found)
 
 			// verify length - only if key was removed
 			expectedLen := len(tc.setup)

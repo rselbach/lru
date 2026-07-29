@@ -774,18 +774,22 @@ func TestSharded_CapacityDistribution(t *testing.T) {
 	tests := map[string]struct {
 		capacity   int
 		shardCount int
+		wantCaps   []int
 	}{
 		"even distribution": {
 			capacity:   100,
 			shardCount: 10,
+			wantCaps:   []int{10, 10, 10, 10, 10, 10, 10, 10, 10, 10},
 		},
-		"uneven distribution": {
+		"uneven distribution puts remainder on first shards": {
 			capacity:   103,
 			shardCount: 10,
+			wantCaps:   []int{11, 11, 11, 10, 10, 10, 10, 10, 10, 10},
 		},
-		"more shards than capacity": {
+		"more shards than capacity clamps shard count": {
 			capacity:   5,
 			shardCount: 10,
+			wantCaps:   []int{1, 1, 1, 1, 1},
 		},
 	}
 
@@ -796,12 +800,8 @@ func TestSharded_CapacityDistribution(t *testing.T) {
 			cache, err := NewShardedWithCount[int, int](tc.capacity, tc.shardCount)
 			r.NoError(err)
 
-			// verify total capacity is preserved
-			totalCap := 0
-			for _, shard := range cache.shards {
-				totalCap += shard.Capacity()
-			}
-			r.GreaterOrEqual(totalCap, tc.capacity)
+			r.Equal(tc.wantCaps, shardedShardCapacities(cache))
+			r.Equal(tc.capacity, cache.Capacity())
 		})
 	}
 }
@@ -837,8 +837,12 @@ func TestSharded_ResizeEvictsPerShard(t *testing.T) {
 	r := require.New(t)
 	cache := MustNewShardedWithCount[int, int](6, 2)
 
+	// the first key set in each shard is that shard's least recently used
+	// entry, so it is the one a shrink must evict
+	var wantEvicted []int
 	for shardIdx := range cache.shards {
 		keys := keysForShard(cache, shardIdx, 3)
+		wantEvicted = append(wantEvicted, keys[0])
 		for _, key := range keys {
 			cache.Set(key, key)
 		}
@@ -864,7 +868,7 @@ func TestSharded_ResizeEvictsPerShard(t *testing.T) {
 	}
 
 	mu.Lock()
-	r.Len(evictedKeys, 2)
+	r.ElementsMatch(wantEvicted, evictedKeys)
 	mu.Unlock()
 }
 

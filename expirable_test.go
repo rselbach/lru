@@ -217,11 +217,11 @@ func TestExpirable_GetWithTTL(t *testing.T) {
 	// Add an item
 	cache.Set("a", 1)
 
-	// Get with TTL
+	// Get with TTL; the clock is mocked, so the value is exact
 	val, ttl, found := cache.GetWithTTL("a")
 	r.True(found)
 	r.Equal(1, val)
-	r.InDelta(time.Minute, ttl, float64(time.Second))
+	r.Equal(time.Minute, ttl)
 
 	// Advance time a bit
 	mockClock.Add(30 * time.Second)
@@ -230,7 +230,7 @@ func TestExpirable_GetWithTTL(t *testing.T) {
 	val, ttl, found = cache.GetWithTTL("a")
 	r.True(found)
 	r.Equal(1, val)
-	r.InDelta(30*time.Second, ttl, float64(time.Second))
+	r.Equal(30*time.Second, ttl)
 
 	// Try with a non-existent key
 	val, ttl, found = cache.GetWithTTL("nonexistent")
@@ -1021,13 +1021,15 @@ func TestExpirable_Peek(t *testing.T) {
 	_, found = cache.Peek("a")
 	r.False(found)
 
-	// entry should still be in items map (not removed by Peek)
-	// we can verify by checking that Len() still counts it as 0 (expired)
+	// all three expired entries must still be physically present: Peek does
+	// not purge, and Len only excludes them from the count
+	r.Len(cache.items, 3)
 	r.Equal(0, cache.Len())
 
-	// but Get() should remove it
+	// but Get() should remove the entry it touches
 	_, found = cache.Get("b")
 	r.False(found)
+	r.Len(cache.items, 2)
 }
 
 func TestExpirable_GetOrSetSingleflight(t *testing.T) {
