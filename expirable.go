@@ -376,7 +376,7 @@ func (c *Expirable[K, V]) Resize(capacity int) (int, error) {
 			break
 		}
 		if onEvict != nil {
-			evicted = append(evicted, *oldest)
+			evicted = append(evicted, evictedItem[K, V]{key: oldest.key, val: oldest.val})
 		}
 		delete(c.items, oldest.key)
 		c.removeEntry(oldest)
@@ -396,7 +396,7 @@ func (c *Expirable[K, V]) Resize(capacity int) (int, error) {
 // setLocked is an internal method that adds or updates an item in the cache.
 // it assumes the mutex is already locked.
 // Returns entries removed due to expiry cleanup or capacity eviction.
-func (c *Expirable[K, V]) setLocked(key K, value V, ttl time.Duration, collectEvicted bool) []expirableEntry[K, V] {
+func (c *Expirable[K, V]) setLocked(key K, value V, ttl time.Duration, collectEvicted bool) []evictedItem[K, V] {
 	// if key exists, update value and expiry and move to front
 	if e, found := c.items[key]; found {
 		c.moveToFront(e)
@@ -405,7 +405,7 @@ func (c *Expirable[K, V]) setLocked(key K, value V, ttl time.Duration, collectEv
 		return nil
 	}
 
-	var evicted []expirableEntry[K, V]
+	var evicted []evictedItem[K, V]
 
 	// If physical storage is full, purge expired entries before evicting a live
 	// least recently used entry.
@@ -418,7 +418,7 @@ func (c *Expirable[K, V]) setLocked(key K, value V, ttl time.Duration, collectEv
 		oldest := c.tail
 		if oldest != nil {
 			if collectEvicted {
-				evicted = append(evicted, *oldest)
+				evicted = append(evicted, evictedItem[K, V]{key: oldest.key, val: oldest.val})
 			}
 			delete(c.items, oldest.key)
 			c.removeEntry(oldest)
@@ -436,13 +436,13 @@ func (c *Expirable[K, V]) setLocked(key K, value V, ttl time.Duration, collectEv
 	return evicted
 }
 
-func (c *Expirable[K, V]) removeExpiredLocked(now time.Time, collect bool) []expirableEntry[K, V] {
-	var expired []expirableEntry[K, V]
+func (c *Expirable[K, V]) removeExpiredLocked(now time.Time, collect bool) []evictedItem[K, V] {
+	var expired []evictedItem[K, V]
 	for e := c.head; e != nil; {
 		next := e.next
 		if now.After(e.expiry) {
 			if collect {
-				expired = append(expired, *e)
+				expired = append(expired, evictedItem[K, V]{key: e.key, val: e.val})
 			}
 			delete(c.items, e.key)
 			c.removeEntry(e)
@@ -544,13 +544,13 @@ func (c *Expirable[K, V]) RemoveOldest() (K, V, bool) {
 	found := false
 	now := c.timeNow()
 	onEvict := c.onEvict
-	var evicted []expirableEntry[K, V]
+	var evicted []evictedItem[K, V]
 
 	for e := c.tail; e != nil; {
 		prev := e.prev
 		if now.After(e.expiry) {
 			if onEvict != nil {
-				evicted = append(evicted, *e)
+				evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
 			}
 			delete(c.items, e.key)
 			c.removeEntry(e)
@@ -562,7 +562,7 @@ func (c *Expirable[K, V]) RemoveOldest() (K, V, bool) {
 		val = e.val
 		found = true
 		if onEvict != nil {
-			evicted = append(evicted, *e)
+			evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
 		}
 		delete(c.items, e.key)
 		c.removeEntry(e)
@@ -609,13 +609,13 @@ func (c *Expirable[K, V]) Clear() {
 	c.mu.Lock()
 	onEvict := c.onEvict
 
-	var evicted []expirableEntry[K, V]
+	var evicted []evictedItem[K, V]
 	if onEvict != nil {
 		now := c.timeNow()
-		evicted = make([]expirableEntry[K, V], 0, len(c.items))
+		evicted = make([]evictedItem[K, V], 0, len(c.items))
 		for e := c.head; e != nil; e = e.next {
 			if !now.After(e.expiry) {
-				evicted = append(evicted, *e)
+				evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
 			}
 		}
 	}
@@ -810,18 +810,12 @@ func (c *Expirable[K, V]) RemoveExpired() int {
 	onEvict := c.onEvict
 	removed := 0
 
-	var expired []struct {
-		key K
-		val V
-	}
+	var expired []evictedItem[K, V]
 	for e := c.head; e != nil; {
 		next := e.next
 		if now.After(e.expiry) {
 			if onEvict != nil {
-				expired = append(expired, struct {
-					key K
-					val V
-				}{key: e.key, val: e.val})
+				expired = append(expired, evictedItem[K, V]{key: e.key, val: e.val})
 			}
 			delete(c.items, e.key)
 			c.removeEntry(e)

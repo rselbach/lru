@@ -28,6 +28,13 @@ type entry[K comparable, V any] struct {
 	next *entry[K, V]
 }
 
+// evictedItem holds a key/value pair captured for eviction callbacks that run
+// after the cache lock is released, without retaining list pointers.
+type evictedItem[K comparable, V any] struct {
+	key K
+	val V
+}
+
 // New creates a new LRU cache with the given capacity.
 // The capacity must be greater than zero.
 func New[K comparable, V any](capacity int) (*Cache[K, V], error) {
@@ -218,8 +225,8 @@ func (c *Cache[K, V]) Resize(capacity int) (int, error) {
 	return evictedCount, nil
 }
 
-func (c *Cache[K, V]) resizeLocked(capacity int, collectEvicted bool) ([]entry[K, V], int) {
-	var evicted []entry[K, V]
+func (c *Cache[K, V]) resizeLocked(capacity int, collectEvicted bool) ([]evictedItem[K, V], int) {
+	var evicted []evictedItem[K, V]
 	evictedCount := 0
 
 	for len(c.items) > capacity {
@@ -228,7 +235,7 @@ func (c *Cache[K, V]) resizeLocked(capacity int, collectEvicted bool) ([]entry[K
 			break
 		}
 		if collectEvicted {
-			evicted = append(evicted, *oldest)
+			evicted = append(evicted, evictedItem[K, V]{key: oldest.key, val: oldest.val})
 		}
 		delete(c.items, oldest.key)
 		c.remove(oldest)
@@ -392,11 +399,11 @@ func (c *Cache[K, V]) Clear() {
 	c.mu.Lock()
 	onEvict := c.onEvict
 
-	var evicted []entry[K, V]
+	var evicted []evictedItem[K, V]
 	if onEvict != nil {
-		evicted = make([]entry[K, V], 0, len(c.items))
+		evicted = make([]evictedItem[K, V], 0, len(c.items))
 		for e := c.head; e != nil; e = e.next {
-			evicted = append(evicted, *e)
+			evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
 		}
 	}
 
