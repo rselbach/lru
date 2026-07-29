@@ -20,20 +20,20 @@ func (k collidingStringKey) String() string {
 
 func TestCache_New(t *testing.T) {
 	tests := map[string]struct {
-		capacity    int
-		wantErr bool
+		capacity int
+		wantErr  bool
 	}{
 		"valid capacity": {
-			capacity:    5,
-			wantErr: false,
+			capacity: 5,
+			wantErr:  false,
 		},
 		"zero capacity": {
-			capacity:    0,
-			wantErr: true,
+			capacity: 0,
+			wantErr:  true,
 		},
 		"negative capacity": {
-			capacity:    -1,
-			wantErr: true,
+			capacity: -1,
+			wantErr:  true,
 		},
 	}
 
@@ -57,21 +57,21 @@ func TestCache_New(t *testing.T) {
 func TestCache_MustNew(t *testing.T) {
 	tests := map[string]struct {
 		capacity     int
-		wantPanic  bool
+		wantPanic    bool
 		wantPanicMsg string
 	}{
 		"valid capacity": {
-			capacity:    5,
+			capacity:  5,
 			wantPanic: false,
 		},
 		"zero capacity": {
 			capacity:     0,
-			wantPanic:  true,
+			wantPanic:    true,
 			wantPanicMsg: "capacity must be greater than zero",
 		},
 		"negative capacity": {
 			capacity:     -1,
-			wantPanic:  true,
+			wantPanic:    true,
 			wantPanicMsg: "capacity must be greater than zero",
 		},
 	}

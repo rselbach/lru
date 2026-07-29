@@ -11,20 +11,20 @@ import (
 
 func TestSharded_New(t *testing.T) {
 	tests := map[string]struct {
-		capacity    int
-		wantErr bool
+		capacity int
+		wantErr  bool
 	}{
 		"valid capacity": {
-			capacity:    100,
-			wantErr: false,
+			capacity: 100,
+			wantErr:  false,
 		},
 		"zero capacity": {
-			capacity:    0,
-			wantErr: true,
+			capacity: 0,
+			wantErr:  true,
 		},
 		"negative capacity": {
-			capacity:    -1,
-			wantErr: true,
+			capacity: -1,
+			wantErr:  true,
 		},
 	}
 
@@ -50,33 +50,33 @@ func TestSharded_NewWithCount(t *testing.T) {
 	tests := map[string]struct {
 		capacity       int
 		shardCount     int
-		wantErr    bool
+		wantErr        bool
 		wantShardCount int // want shard count after clamping (0 means use shardCount)
 	}{
 		"valid capacity and shard count": {
-			capacity:    100,
-			shardCount:  8,
-			wantErr: false,
+			capacity:   100,
+			shardCount: 8,
+			wantErr:    false,
 		},
 		"zero capacity": {
-			capacity:    0,
-			shardCount:  8,
-			wantErr: true,
+			capacity:   0,
+			shardCount: 8,
+			wantErr:    true,
 		},
 		"zero shard count": {
-			capacity:    100,
-			shardCount:  0,
-			wantErr: true,
+			capacity:   100,
+			shardCount: 0,
+			wantErr:    true,
 		},
 		"negative shard count": {
-			capacity:    100,
-			shardCount:  -1,
-			wantErr: true,
+			capacity:   100,
+			shardCount: -1,
+			wantErr:    true,
 		},
 		"more shards than capacity": {
 			capacity:       4,
 			shardCount:     16,
-			wantErr:    false,
+			wantErr:        false,
 			wantShardCount: 4, // clamped to capacity
 		},
 	}
@@ -106,16 +106,16 @@ func TestSharded_NewWithCount(t *testing.T) {
 func TestSharded_MustNew(t *testing.T) {
 	tests := map[string]struct {
 		capacity     int
-		wantPanic  bool
+		wantPanic    bool
 		wantPanicMsg string
 	}{
 		"valid capacity": {
-			capacity:    100,
+			capacity:  100,
 			wantPanic: false,
 		},
 		"zero capacity": {
 			capacity:     0,
-			wantPanic:  true,
+			wantPanic:    true,
 			wantPanicMsg: "capacity must be greater than zero",
 		},
 	}
@@ -141,18 +141,18 @@ func TestSharded_MustNewWithCount(t *testing.T) {
 	tests := map[string]struct {
 		capacity     int
 		shardCount   int
-		wantPanic  bool
+		wantPanic    bool
 		wantPanicMsg string
 	}{
 		"valid": {
-			capacity:    100,
-			shardCount:  8,
-			wantPanic: false,
+			capacity:   100,
+			shardCount: 8,
+			wantPanic:  false,
 		},
 		"zero shard count": {
 			capacity:     100,
 			shardCount:   0,
-			wantPanic:  true,
+			wantPanic:    true,
 			wantPanicMsg: "shard count must be greater than zero",
 		},
 	}

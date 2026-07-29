@@ -37,34 +37,34 @@ func (m *mockTime) Add(d time.Duration) {
 
 func TestExpirable_New(t *testing.T) {
 	tests := map[string]struct {
-		capacity    int
-		ttl         time.Duration
-		wantErr bool
+		capacity int
+		ttl      time.Duration
+		wantErr  bool
 	}{
 		"valid parameters": {
-			capacity:    5,
-			ttl:         time.Minute,
-			wantErr: false,
+			capacity: 5,
+			ttl:      time.Minute,
+			wantErr:  false,
 		},
 		"zero capacity": {
-			capacity:    0,
-			ttl:         time.Minute,
-			wantErr: true,
+			capacity: 0,
+			ttl:      time.Minute,
+			wantErr:  true,
 		},
 		"negative capacity": {
-			capacity:    -1,
-			ttl:         time.Minute,
-			wantErr: true,
+			capacity: -1,
+			ttl:      time.Minute,
+			wantErr:  true,
 		},
 		"zero ttl": {
-			capacity:    5,
-			ttl:         0,
-			wantErr: true,
+			capacity: 5,
+			ttl:      0,
+			wantErr:  true,
 		},
 		"negative ttl": {
-			capacity:    5,
-			ttl:         -time.Second,
-			wantErr: true,
+			capacity: 5,
+			ttl:      -time.Second,
+			wantErr:  true,
 		},
 	}
 
@@ -90,36 +90,36 @@ func TestExpirable_MustNew(t *testing.T) {
 	tests := map[string]struct {
 		capacity     int
 		ttl          time.Duration
-		wantPanic  bool
+		wantPanic    bool
 		wantPanicMsg string
 	}{
 		"valid parameters": {
-			capacity:    5,
-			ttl:         time.Minute,
+			capacity:  5,
+			ttl:       time.Minute,
 			wantPanic: false,
 		},
 		"zero capacity": {
 			capacity:     0,
 			ttl:          time.Minute,
-			wantPanic:  true,
+			wantPanic:    true,
 			wantPanicMsg: "capacity must be greater than zero",
 		},
 		"negative capacity": {
 			capacity:     -1,
 			ttl:          time.Minute,
-			wantPanic:  true,
+			wantPanic:    true,
 			wantPanicMsg: "capacity must be greater than zero",
 		},
 		"zero ttl": {
 			capacity:     5,
 			ttl:          0,
-			wantPanic:  true,
+			wantPanic:    true,
 			wantPanicMsg: "TTL must be greater than zero",
 		},
 		"negative ttl": {
 			capacity:     5,
 			ttl:          -time.Second,
-			wantPanic:  true,
+			wantPanic:    true,
 			wantPanicMsg: "TTL must be greater than zero",
 		},
 	}
