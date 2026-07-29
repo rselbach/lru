@@ -222,6 +222,21 @@ func (s *Sharded[K, V]) Keys() []K {
 	return keys
 }
 
+// Values returns a slice of all values in the cache.
+// The order matches [Sharded.Keys]: most recently used to least recently used
+// within each shard, with shards processed in order. Note that the global LRU
+// order is not preserved across shards.
+//
+// The result is a point-in-time snapshot and is not atomic with respect to
+// concurrent updates.
+func (s *Sharded[K, V]) Values() []V {
+	values := make([]V, 0, s.Len())
+	for _, shard := range s.shards {
+		values = append(values, shard.Values()...)
+	}
+	return values
+}
+
 // Capacity returns the maximum total capacity of the cache.
 func (s *Sharded[K, V]) Capacity() int {
 	s.mu.RLock()
