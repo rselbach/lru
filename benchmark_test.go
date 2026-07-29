@@ -291,29 +291,43 @@ func BenchmarkExpirable_Set_Evict(b *testing.B) {
 	}
 }
 
+// benchExpiredChunk bounds how many expired entries are staged per refill so
+// timer toggles stay rare (StopTimer/StartTimer read memstats) and memory
+// stays bounded regardless of b.N.
+const benchExpiredChunk = 65536
+
+// BenchmarkExpirable_Set_FullWithExpired measures the amortized cost per
+// expired entry purged by a Set into a cache whose storage is full of expired
+// entries; b.N counts purged entries, not Set calls.
 func BenchmarkExpirable_Set_FullWithExpired(b *testing.B) {
-	for _, size := range benchSizes {
-		b.Run(fmt.Sprintf("size=%d", size), func(b *testing.B) {
-			cache := MustNewExpirable[int, int](size, time.Hour)
+	chunk := benchExpiredChunk
+	if b.N < chunk {
+		chunk = b.N
+	}
 
-			now := time.Now()
-			cache.SetTimeNowFunc(func() time.Time { return now })
+	now := time.Now()
 
-			b.ResetTimer()
-			b.ReportAllocs()
+	b.ReportAllocs()
+	b.ResetTimer()
 
-			for i := 0; i < b.N; i++ {
-				b.StopTimer()
-				cache.Clear()
-				for j := 0; j < size; j++ {
-					cache.Set(i*size+j, j)
-				}
-				now = now.Add(2 * time.Hour)
-				b.StartTimer()
+	for purged := 0; purged < b.N; {
+		n := chunk
+		if b.N-purged < n {
+			n = b.N - purged
+		}
 
-				cache.Set(-i-1, i)
-			}
-		})
+		b.StopTimer()
+		cache := MustNewExpirable[int, int](n, time.Hour)
+		cache.SetTimeNowFunc(func() time.Time { return now })
+		for j := 0; j < n; j++ {
+			cache.Set(j, j)
+		}
+		now = now.Add(2 * time.Hour)
+		b.StartTimer()
+
+		// storage is full, so this purges all n expired entries
+		cache.Set(-1, 0)
+		purged += n
 	}
 }
 
@@ -335,54 +349,72 @@ func BenchmarkExpirable_GetWithTTL(b *testing.B) {
 	}
 }
 
-// Benchmark with expiration happening
+// BenchmarkExpirable_Get_WithExpiration measures Get hitting an expired entry
+// (lazy removal path). Entries are re-staged in untimed chunks so every timed
+// Get removes exactly one expired entry rather than degrading into misses on
+// an empty cache.
 func BenchmarkExpirable_Get_WithExpiration(b *testing.B) {
-	size := 1000
-	cache := MustNewExpirable[int, int](size, time.Nanosecond)
+	chunk := benchExpiredChunk
+	if b.N < chunk {
+		chunk = b.N
+	}
+
+	cache := MustNewExpirable[int, int](chunk, time.Hour)
 
 	// use a mock time function to control expiration
 	now := time.Now()
 	cache.SetTimeNowFunc(func() time.Time { return now })
 
-	for i := 0; i < size; i++ {
-		cache.Set(i, i)
-	}
-
-	// advance time to expire all entries
-	now = now.Add(time.Second)
-
-	b.ResetTimer()
 	b.ReportAllocs()
+	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		cache.Get(i % size)
+		if i%chunk == 0 {
+			b.StopTimer()
+			for j := 0; j < chunk; j++ {
+				cache.Set(j, j)
+			}
+			now = now.Add(2 * time.Hour)
+			b.StartTimer()
+		}
+
+		cache.Get(i % chunk)
 	}
 }
 
+// BenchmarkExpirable_RemoveExpired measures the amortized cost per entry
+// removed by RemoveExpired; b.N counts removed entries, not RemoveExpired
+// calls.
 func BenchmarkExpirable_RemoveExpired(b *testing.B) {
-	for _, size := range benchSizes {
-		b.Run(fmt.Sprintf("size=%d", size), func(b *testing.B) {
-			cache := MustNewExpirable[int, int](size, time.Hour)
+	chunk := benchExpiredChunk
+	if b.N < chunk {
+		chunk = b.N
+	}
 
-			now := time.Now()
-			cache.SetTimeNowFunc(func() time.Time { return now })
+	cache := MustNewExpirable[int, int](chunk, time.Hour)
 
-			b.ResetTimer()
-			b.ReportAllocs()
+	now := time.Now()
+	cache.SetTimeNowFunc(func() time.Time { return now })
 
-			for i := 0; i < b.N; i++ {
-				b.StopTimer()
-				// refill cache
-				for j := 0; j < size; j++ {
-					cache.Set(j, j)
-				}
-				// expire all
-				now = now.Add(2 * time.Hour)
-				b.StartTimer()
+	b.ReportAllocs()
+	b.ResetTimer()
 
-				cache.RemoveExpired()
-			}
-		})
+	for removed := 0; removed < b.N; {
+		n := chunk
+		if b.N-removed < n {
+			n = b.N - removed
+		}
+
+		b.StopTimer()
+		// refill with entries that expire immediately below
+		for j := 0; j < n; j++ {
+			cache.Set(j, j)
+		}
+		now = now.Add(2 * time.Hour)
+		b.StartTimer()
+
+		cache.RemoveExpired()
+		removed += n
 	}
 }
 
