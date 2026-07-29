@@ -301,6 +301,110 @@ func TestExpirable_GetOrSet(t *testing.T) {
 	r.False(cache.Contains("b"))
 }
 
+func TestExpirable_GetOrSet_KeyAddedWhileComputing(t *testing.T) {
+	r := require.New(t)
+	cache := MustNewExpirable[string, int](5, time.Minute)
+
+	computeStarted := make(chan struct{})
+	release := make(chan struct{})
+	result := make(chan int, 1)
+	go func() {
+		val, _ := cache.GetOrSet("a", func() (int, error) {
+			close(computeStarted)
+			<-release
+			return 10, nil
+		})
+		result <- val
+	}()
+
+	<-computeStarted
+	cache.Set("a", 99) // beat the compute to the key
+	close(release)
+
+	r.Equal(99, <-result, "GetOrSet must return the value that won the race")
+	val, found := cache.Get("a")
+	r.True(found)
+	r.Equal(99, val)
+}
+
+func TestExpirable_GetOrSet_ExpiredWhileComputing(t *testing.T) {
+	r := require.New(t)
+	mockClock := newMockTime()
+	cache := MustNewExpirable[string, int](5, time.Minute)
+	cache.SetTimeNowFunc(mockClock.Now)
+
+	evicted := make(map[string]int)
+	cache.OnEvict(func(key string, value int) {
+		evicted[key] = value
+	})
+
+	computeStarted := make(chan struct{})
+	release := make(chan struct{})
+	result := make(chan int, 1)
+	go func() {
+		val, _ := cache.GetOrSet("a", func() (int, error) {
+			close(computeStarted)
+			<-release
+			return 10, nil
+		})
+		result <- val
+	}()
+
+	<-computeStarted
+	// the key is written and expires while the compute is still running
+	cache.Set("a", 50, WithTTL(30*time.Second))
+	mockClock.Add(31 * time.Second)
+	close(release)
+
+	// the locked re-check must replace the expired entry with the computed
+	// value and report the dead value to the eviction callback
+	r.Equal(10, <-result)
+	r.Equal(map[string]int{"a": 50}, evicted)
+
+	val, found := cache.Get("a")
+	r.True(found)
+	r.Equal(10, val)
+}
+
+func TestExpirable_GetOrSetSingleflight_ExpiredWhileComputing(t *testing.T) {
+	r := require.New(t)
+	mockClock := newMockTime()
+	cache := MustNewExpirable[string, int](5, time.Minute)
+	cache.SetTimeNowFunc(mockClock.Now)
+
+	evicted := make(map[string]int)
+	cache.OnEvict(func(key string, value int) {
+		evicted[key] = value
+	})
+
+	computeStarted := make(chan struct{})
+	release := make(chan struct{})
+	result := make(chan int, 1)
+	go func() {
+		val, _ := cache.GetOrSetSingleflight("a", func() (int, error) {
+			close(computeStarted)
+			<-release
+			return 10, nil
+		})
+		result <- val
+	}()
+
+	<-computeStarted
+	// the key is written and expires while the compute is still running
+	cache.Set("a", 50, WithTTL(30*time.Second))
+	mockClock.Add(31 * time.Second)
+	close(release)
+
+	// the locked re-check must replace the expired entry with the computed
+	// value and report the dead value to the eviction callback
+	r.Equal(10, <-result)
+	r.Equal(map[string]int{"a": 50}, evicted)
+
+	val, found := cache.Get("a")
+	r.True(found)
+	r.Equal(10, val)
+}
+
 func TestExpirable_RemoveExpired(t *testing.T) {
 	r := require.New(t)
 	mockClock := newMockTime()

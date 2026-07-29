@@ -302,6 +302,96 @@ func TestCache_GetOrSet(t *testing.T) {
 	}
 }
 
+func TestCache_GetOrSet_KeyAddedWhileComputing(t *testing.T) {
+	r := require.New(t)
+	cache := MustNew[string, int](5)
+
+	computeStarted := make(chan struct{})
+	release := make(chan struct{})
+	result := make(chan int, 1)
+	go func() {
+		val, _ := cache.GetOrSet("a", func() (int, error) {
+			close(computeStarted)
+			<-release
+			return 10, nil
+		})
+		result <- val
+	}()
+
+	<-computeStarted
+	cache.Set("a", 99) // beat the compute to the key
+	close(release)
+
+	r.Equal(99, <-result, "GetOrSet must return the value that won the race")
+	val, found := cache.Get("a")
+	r.True(found)
+	r.Equal(99, val)
+}
+
+func TestCache_GetOrSetSingleflight_KeyAddedWhileComputing(t *testing.T) {
+	r := require.New(t)
+	cache := MustNew[string, int](5)
+
+	computeStarted := make(chan struct{})
+	release := make(chan struct{})
+	result := make(chan int, 1)
+	go func() {
+		val, _ := cache.GetOrSetSingleflight("a", func() (int, error) {
+			close(computeStarted)
+			<-release
+			return 10, nil
+		})
+		result <- val
+	}()
+
+	<-computeStarted
+	cache.Set("a", 99) // beat the compute to the key
+	close(release)
+
+	r.Equal(99, <-result, "GetOrSetSingleflight must return the value that won the race")
+	val, found := cache.Get("a")
+	r.True(found)
+	r.Equal(99, val)
+}
+
+func TestCache_GetOrSet_CapacityEvictionFiresOnEvict(t *testing.T) {
+	r := require.New(t)
+	cache := MustNew[string, int](1)
+
+	var evictedKeys []string
+	cache.OnEvict(func(key string, _ int) {
+		evictedKeys = append(evictedKeys, key)
+	})
+
+	cache.Set("a", 1)
+	val, err := cache.GetOrSet("b", func() (int, error) { return 2, nil })
+	r.NoError(err)
+	r.Equal(2, val)
+	r.Equal([]string{"a"}, evictedKeys)
+
+	val, err = cache.GetOrSetSingleflight("c", func() (int, error) { return 3, nil })
+	r.NoError(err)
+	r.Equal(3, val)
+	r.Equal([]string{"a", "b"}, evictedKeys)
+}
+
+func TestCache_GetOrSet_ComputeMayCallBackIntoCache(t *testing.T) {
+	r := require.New(t)
+	cache := MustNew[string, int](5)
+
+	// compute runs outside the cache lock, so re-entrant use must not deadlock
+	val, err := cache.GetOrSet("a", func() (int, error) {
+		cache.Set("b", 2)
+		v, ok := cache.Get("b")
+		if !ok {
+			return 0, fmt.Errorf("b not found")
+		}
+		return v + 40, nil
+	})
+	r.NoError(err)
+	r.Equal(42, val)
+}
+
 func TestCache_Clear(t *testing.T) {
 	r := require.New(t)
 	cache := MustNew[string, int](5)
