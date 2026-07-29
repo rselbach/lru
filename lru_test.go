@@ -21,19 +21,19 @@ func (k collidingStringKey) String() string {
 func TestCache_New(t *testing.T) {
 	tests := map[string]struct {
 		capacity    int
-		expectError bool
+		wantErr bool
 	}{
 		"valid capacity": {
 			capacity:    5,
-			expectError: false,
+			wantErr: false,
 		},
 		"zero capacity": {
 			capacity:    0,
-			expectError: true,
+			wantErr: true,
 		},
 		"negative capacity": {
 			capacity:    -1,
-			expectError: true,
+			wantErr: true,
 		},
 	}
 
@@ -42,7 +42,7 @@ func TestCache_New(t *testing.T) {
 			r := require.New(t)
 
 			cache, err := New[string, int](tc.capacity)
-			if tc.expectError {
+			if tc.wantErr {
 				r.Error(err)
 				r.Nil(cache)
 			} else {
@@ -57,22 +57,22 @@ func TestCache_New(t *testing.T) {
 func TestCache_MustNew(t *testing.T) {
 	tests := map[string]struct {
 		capacity     int
-		expectPanic  bool
-		panicMessage string
+		wantPanic  bool
+		wantPanicMsg string
 	}{
 		"valid capacity": {
 			capacity:    5,
-			expectPanic: false,
+			wantPanic: false,
 		},
 		"zero capacity": {
 			capacity:     0,
-			expectPanic:  true,
-			panicMessage: "capacity must be greater than zero",
+			wantPanic:  true,
+			wantPanicMsg: "capacity must be greater than zero",
 		},
 		"negative capacity": {
 			capacity:     -1,
-			expectPanic:  true,
-			panicMessage: "capacity must be greater than zero",
+			wantPanic:  true,
+			wantPanicMsg: "capacity must be greater than zero",
 		},
 	}
 
@@ -80,8 +80,8 @@ func TestCache_MustNew(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r := require.New(t)
 
-			if tc.expectPanic {
-				r.PanicsWithError(tc.panicMessage, func() {
+			if tc.wantPanic {
+				r.PanicsWithError(tc.wantPanicMsg, func() {
 					MustNew[string, int](tc.capacity)
 				})
 			} else {
@@ -168,8 +168,8 @@ func TestCache_GetSet(t *testing.T) {
 			// verify cache contents
 			for k, v := range tc.want {
 				got, found := cache.Get(k)
-				r.True(found, fmt.Sprintf("key %s should be in cache", k))
-				r.Equal(v, got, fmt.Sprintf("value for key %s should be %d", k, v))
+				r.True(found, "key %s should be in cache", k)
+				r.Equal(v, got, "value for key %s should be %d", k, v)
 			}
 
 			// keys not in tc.want should not be in cache
@@ -254,11 +254,11 @@ func TestCache_Remove(t *testing.T) {
 			r.False(found)
 
 			// verify length - only if key was removed
-			expectedLen := len(tc.setup)
+			wantLen := len(tc.setup)
 			if tc.want {
-				expectedLen--
+				wantLen--
 			}
-			r.Equal(expectedLen, cache.Len(), "cache length should be correct after remove operation")
+			r.Equal(wantLen, cache.Len(), "cache length should be correct after remove operation")
 		})
 	}
 }
@@ -816,7 +816,7 @@ func TestCache_GetOrSetSingleflight_DistinctStringifiedKeys(t *testing.T) {
 			started[keyID] = true
 		case <-time.After(time.Second):
 			releaseComputes()
-			t.Fatalf("expected both distinct keys to compute; started computes: %v", started)
+			t.Fatalf("want both distinct keys to compute; started: %v", started)
 		}
 	}
 	releaseComputes()

@@ -12,19 +12,19 @@ import (
 func TestSharded_New(t *testing.T) {
 	tests := map[string]struct {
 		capacity    int
-		expectError bool
+		wantErr bool
 	}{
 		"valid capacity": {
 			capacity:    100,
-			expectError: false,
+			wantErr: false,
 		},
 		"zero capacity": {
 			capacity:    0,
-			expectError: true,
+			wantErr: true,
 		},
 		"negative capacity": {
 			capacity:    -1,
-			expectError: true,
+			wantErr: true,
 		},
 	}
 
@@ -33,7 +33,7 @@ func TestSharded_New(t *testing.T) {
 			r := require.New(t)
 
 			cache, err := NewSharded[string, int](tc.capacity)
-			if tc.expectError {
+			if tc.wantErr {
 				r.Error(err)
 				r.Nil(cache)
 			} else {
@@ -50,33 +50,33 @@ func TestSharded_NewWithCount(t *testing.T) {
 	tests := map[string]struct {
 		capacity       int
 		shardCount     int
-		expectError    bool
-		wantShardCount int // expected shard count after clamping (0 means use shardCount)
+		wantErr    bool
+		wantShardCount int // want shard count after clamping (0 means use shardCount)
 	}{
 		"valid capacity and shard count": {
 			capacity:    100,
 			shardCount:  8,
-			expectError: false,
+			wantErr: false,
 		},
 		"zero capacity": {
 			capacity:    0,
 			shardCount:  8,
-			expectError: true,
+			wantErr: true,
 		},
 		"zero shard count": {
 			capacity:    100,
 			shardCount:  0,
-			expectError: true,
+			wantErr: true,
 		},
 		"negative shard count": {
 			capacity:    100,
 			shardCount:  -1,
-			expectError: true,
+			wantErr: true,
 		},
 		"more shards than capacity": {
 			capacity:       4,
 			shardCount:     16,
-			expectError:    false,
+			wantErr:    false,
 			wantShardCount: 4, // clamped to capacity
 		},
 	}
@@ -86,7 +86,7 @@ func TestSharded_NewWithCount(t *testing.T) {
 			r := require.New(t)
 
 			cache, err := NewShardedWithCount[string, int](tc.capacity, tc.shardCount)
-			if tc.expectError {
+			if tc.wantErr {
 				r.Error(err)
 				r.Nil(cache)
 			} else {
@@ -106,17 +106,17 @@ func TestSharded_NewWithCount(t *testing.T) {
 func TestSharded_MustNew(t *testing.T) {
 	tests := map[string]struct {
 		capacity     int
-		expectPanic  bool
-		panicMessage string
+		wantPanic  bool
+		wantPanicMsg string
 	}{
 		"valid capacity": {
 			capacity:    100,
-			expectPanic: false,
+			wantPanic: false,
 		},
 		"zero capacity": {
 			capacity:     0,
-			expectPanic:  true,
-			panicMessage: "capacity must be greater than zero",
+			wantPanic:  true,
+			wantPanicMsg: "capacity must be greater than zero",
 		},
 	}
 
@@ -124,8 +124,8 @@ func TestSharded_MustNew(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r := require.New(t)
 
-			if tc.expectPanic {
-				r.PanicsWithError(tc.panicMessage, func() {
+			if tc.wantPanic {
+				r.PanicsWithError(tc.wantPanicMsg, func() {
 					MustNewSharded[string, int](tc.capacity)
 				})
 			} else {
@@ -141,19 +141,19 @@ func TestSharded_MustNewWithCount(t *testing.T) {
 	tests := map[string]struct {
 		capacity     int
 		shardCount   int
-		expectPanic  bool
-		panicMessage string
+		wantPanic  bool
+		wantPanicMsg string
 	}{
 		"valid": {
 			capacity:    100,
 			shardCount:  8,
-			expectPanic: false,
+			wantPanic: false,
 		},
 		"zero shard count": {
 			capacity:     100,
 			shardCount:   0,
-			expectPanic:  true,
-			panicMessage: "shard count must be greater than zero",
+			wantPanic:  true,
+			wantPanicMsg: "shard count must be greater than zero",
 		},
 	}
 
@@ -161,8 +161,8 @@ func TestSharded_MustNewWithCount(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r := require.New(t)
 
-			if tc.expectPanic {
-				r.PanicsWithError(tc.panicMessage, func() {
+			if tc.wantPanic {
+				r.PanicsWithError(tc.wantPanicMsg, func() {
 					MustNewShardedWithCount[string, int](tc.capacity, tc.shardCount)
 				})
 			} else {
@@ -214,8 +214,8 @@ func TestSharded_GetSet(t *testing.T) {
 
 			for k, v := range tc.want {
 				got, found := cache.Get(k)
-				r.True(found, fmt.Sprintf("key %s should be in cache", k))
-				r.Equal(v, got, fmt.Sprintf("value for key %s should be %d", k, v))
+				r.True(found, "key %s should be in cache", k)
+				r.Equal(v, got, "value for key %s should be %d", k, v)
 			}
 
 			r.Equal(len(tc.want), cache.Len())
@@ -264,11 +264,11 @@ func TestSharded_Remove(t *testing.T) {
 			_, found := cache.Get(tc.toRemove)
 			r.False(found)
 
-			expectedLen := len(tc.setup)
+			wantLen := len(tc.setup)
 			if tc.want {
-				expectedLen--
+				wantLen--
 			}
-			r.Equal(expectedLen, cache.Len())
+			r.Equal(wantLen, cache.Len())
 		})
 	}
 }

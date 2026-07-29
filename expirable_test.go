@@ -39,32 +39,32 @@ func TestExpirable_New(t *testing.T) {
 	tests := map[string]struct {
 		capacity    int
 		ttl         time.Duration
-		expectError bool
+		wantErr bool
 	}{
 		"valid parameters": {
 			capacity:    5,
 			ttl:         time.Minute,
-			expectError: false,
+			wantErr: false,
 		},
 		"zero capacity": {
 			capacity:    0,
 			ttl:         time.Minute,
-			expectError: true,
+			wantErr: true,
 		},
 		"negative capacity": {
 			capacity:    -1,
 			ttl:         time.Minute,
-			expectError: true,
+			wantErr: true,
 		},
 		"zero ttl": {
 			capacity:    5,
 			ttl:         0,
-			expectError: true,
+			wantErr: true,
 		},
 		"negative ttl": {
 			capacity:    5,
 			ttl:         -time.Second,
-			expectError: true,
+			wantErr: true,
 		},
 	}
 
@@ -73,7 +73,7 @@ func TestExpirable_New(t *testing.T) {
 			r := require.New(t)
 
 			cache, err := NewExpirable[string, int](tc.capacity, tc.ttl)
-			if tc.expectError {
+			if tc.wantErr {
 				r.Error(err)
 				r.Nil(cache)
 			} else {
@@ -90,37 +90,37 @@ func TestExpirable_MustNew(t *testing.T) {
 	tests := map[string]struct {
 		capacity     int
 		ttl          time.Duration
-		expectPanic  bool
-		panicMessage string
+		wantPanic  bool
+		wantPanicMsg string
 	}{
 		"valid parameters": {
 			capacity:    5,
 			ttl:         time.Minute,
-			expectPanic: false,
+			wantPanic: false,
 		},
 		"zero capacity": {
 			capacity:     0,
 			ttl:          time.Minute,
-			expectPanic:  true,
-			panicMessage: "capacity must be greater than zero",
+			wantPanic:  true,
+			wantPanicMsg: "capacity must be greater than zero",
 		},
 		"negative capacity": {
 			capacity:     -1,
 			ttl:          time.Minute,
-			expectPanic:  true,
-			panicMessage: "capacity must be greater than zero",
+			wantPanic:  true,
+			wantPanicMsg: "capacity must be greater than zero",
 		},
 		"zero ttl": {
 			capacity:     5,
 			ttl:          0,
-			expectPanic:  true,
-			panicMessage: "TTL must be greater than zero",
+			wantPanic:  true,
+			wantPanicMsg: "TTL must be greater than zero",
 		},
 		"negative ttl": {
 			capacity:     5,
 			ttl:          -time.Second,
-			expectPanic:  true,
-			panicMessage: "TTL must be greater than zero",
+			wantPanic:  true,
+			wantPanicMsg: "TTL must be greater than zero",
 		},
 	}
 
@@ -128,8 +128,8 @@ func TestExpirable_MustNew(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r := require.New(t)
 
-			if tc.expectPanic {
-				r.PanicsWithError(tc.panicMessage, func() {
+			if tc.wantPanic {
+				r.PanicsWithError(tc.wantPanicMsg, func() {
 					MustNewExpirable[string, int](tc.capacity, tc.ttl)
 				})
 			} else {
@@ -566,7 +566,7 @@ func waitForExpirablePhysicalLen[K comparable, V any](t *testing.T, cache *Expir
 	cache.mu.RLock()
 	got := len(cache.items)
 	cache.mu.RUnlock()
-	t.Fatalf("expected physical len %d, got %d", want, got)
+	t.Fatalf("physical len: got %d, want %d", got, want)
 }
 
 func TestExpirable_SetTTL(t *testing.T) {
@@ -1161,7 +1161,7 @@ func TestExpirable_GetOrSetSingleflight_DistinctStringifiedKeys(t *testing.T) {
 			started[keyID] = true
 		case <-time.After(time.Second):
 			releaseComputes()
-			t.Fatalf("expected both distinct keys to compute; started computes: %v", started)
+			t.Fatalf("want both distinct keys to compute; started: %v", started)
 		}
 	}
 	releaseComputes()
