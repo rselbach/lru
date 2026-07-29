@@ -1,6 +1,9 @@
 package lru
 
-import "sync"
+import (
+	"runtime"
+	"sync"
+)
 
 // flightGroup suppresses duplicate in-flight calls for the same typed key.
 type flightGroup[K comparable, V any] struct {
@@ -14,6 +17,7 @@ type flightCall[V any] struct {
 	err        error
 	panicked   bool
 	panicValue any
+	goexited   bool
 }
 
 func (g *flightGroup[K, V]) Do(key K, fn func() (V, error)) (V, error) {
@@ -27,6 +31,9 @@ func (g *flightGroup[K, V]) Do(key K, fn func() (V, error)) (V, error) {
 		if c.panicked {
 			panic(c.panicValue)
 		}
+		if c.goexited {
+			runtime.Goexit()
+		}
 		return c.val, c.err
 	}
 
@@ -35,10 +42,15 @@ func (g *flightGroup[K, V]) Do(key K, fn func() (V, error)) (V, error) {
 	g.calls[key] = c
 	g.mu.Unlock()
 
+	// normalReturn distinguishes fn returning from fn panicking, and recovered
+	// distinguishes a recovered panic from runtime.Goexit, which cannot be
+	// stopped and must not be reported to waiters as a successful zero result.
+	normalReturn := false
+	recovered := false
+
 	defer func() {
-		if r := recover(); r != nil {
-			c.panicked = true
-			c.panicValue = r
+		if !normalReturn && !recovered {
+			c.goexited = true
 		}
 		c.wg.Done()
 
@@ -51,6 +63,21 @@ func (g *flightGroup[K, V]) Do(key K, fn func() (V, error)) (V, error) {
 		}
 	}()
 
-	c.val, c.err = fn()
+	func() {
+		defer func() {
+			if !normalReturn {
+				if r := recover(); r != nil {
+					c.panicked = true
+					c.panicValue = r
+				}
+			}
+		}()
+		c.val, c.err = fn()
+		normalReturn = true
+	}()
+
+	if !normalReturn {
+		recovered = true
+	}
 	return c.val, c.err
 }
