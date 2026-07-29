@@ -11,7 +11,9 @@ import (
 )
 
 // mockTime is a helper for testing time-based functionality.
+// It is safe for concurrent use.
 type mockTime struct {
+	mu          sync.Mutex
 	currentTime time.Time
 }
 
@@ -22,10 +24,14 @@ func newMockTime() *mockTime {
 }
 
 func (m *mockTime) Now() time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.currentTime
 }
 
 func (m *mockTime) Add(d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.currentTime = m.currentTime.Add(d)
 }
 
@@ -143,8 +149,7 @@ func TestExpirable_Expiration(t *testing.T) {
 	cache, err := NewExpirable[string, int](5, time.Minute)
 	r.NoError(err)
 
-	// Override the timeNow function to use our mock
-	cache.timeNow = mockClock.Now
+	cache.SetTimeNowFunc(mockClock.Now)
 
 	// Add some items
 	cache.Set("a", 1)
@@ -184,8 +189,7 @@ func TestExpirable_GetWithTTL(t *testing.T) {
 	cache, err := NewExpirable[string, int](5, time.Minute)
 	r.NoError(err)
 
-	// Override the timeNow function to use our mock
-	cache.timeNow = mockClock.Now
+	cache.SetTimeNowFunc(mockClock.Now)
 
 	// Add an item
 	cache.Set("a", 1)
@@ -228,8 +232,7 @@ func TestExpirable_GetOrSet(t *testing.T) {
 	cache, err := NewExpirable[string, int](5, time.Minute)
 	r.NoError(err)
 
-	// Override the timeNow function to use our mock
-	cache.timeNow = mockClock.Now
+	cache.SetTimeNowFunc(mockClock.Now)
 
 	// Track compute calls
 	computeCalled := 0
@@ -282,8 +285,7 @@ func TestExpirable_RemoveExpired(t *testing.T) {
 	cache, err := NewExpirable[string, int](5, time.Minute)
 	r.NoError(err)
 
-	// Override the timeNow function to use our mock
-	cache.timeNow = mockClock.Now
+	cache.SetTimeNowFunc(mockClock.Now)
 
 	// Add some items
 	cache.Set("a", 1)
@@ -447,8 +449,7 @@ func TestExpirable_SetTTL(t *testing.T) {
 	cache, err := NewExpirable[string, int](5, time.Minute)
 	r.NoError(err)
 
-	// Override the timeNow function to use our mock
-	cache.timeNow = mockClock.Now
+	cache.SetTimeNowFunc(mockClock.Now)
 
 	// Set TTL
 	err = cache.SetTTL(30 * time.Second)
@@ -539,8 +540,7 @@ func TestExpirable_LRUEviction(t *testing.T) {
 	cache, err := NewExpirable[string, int](3, time.Minute)
 	r.NoError(err)
 
-	// Override the timeNow function to use our mock
-	cache.timeNow = mockClock.Now
+	cache.SetTimeNowFunc(mockClock.Now)
 
 	// Add items to fill the cache
 	cache.Set("a", 1)
@@ -569,7 +569,7 @@ func TestExpirable_SetPurgesExpiredBeforeLiveEviction(t *testing.T) {
 	mockClock := newMockTime()
 
 	cache := MustNewExpirable[string, int](3, time.Minute)
-	cache.timeNow = mockClock.Now
+	cache.SetTimeNowFunc(mockClock.Now)
 
 	cache.Set("live-tail", 1)
 	cache.Set("expired", 2, WithTTL(30*time.Second))
@@ -597,7 +597,7 @@ func TestExpirable_SetExpiredCleanup_CallbackAfterUnlock(t *testing.T) {
 	mockClock := newMockTime()
 
 	cache := MustNewExpirable[string, int](1, time.Minute)
-	cache.timeNow = mockClock.Now
+	cache.SetTimeNowFunc(mockClock.Now)
 	cache.Set("expired", 1, WithTTL(30*time.Second))
 	mockClock.Add(31 * time.Second)
 
@@ -660,7 +660,7 @@ func TestExpirable_Resize_PurgesExpiredBeforeLiveEviction(t *testing.T) {
 	mockClock := newMockTime()
 
 	cache := MustNewExpirable[string, int](4, time.Minute)
-	cache.timeNow = mockClock.Now
+	cache.SetTimeNowFunc(mockClock.Now)
 	cache.Set("expired-tail", 1, WithTTL(30*time.Second))
 	cache.Set("live-tail", 2)
 	cache.Set("expired-middle", 3, WithTTL(30*time.Second))
@@ -713,7 +713,7 @@ func TestExpirable_GetOldest(t *testing.T) {
 	mockClock := newMockTime()
 
 	cache := MustNewExpirable[string, int](5, time.Minute)
-	cache.timeNow = mockClock.Now
+	cache.SetTimeNowFunc(mockClock.Now)
 
 	key, value, ok := cache.GetOldest()
 	r.False(ok)
@@ -739,7 +739,7 @@ func TestExpirable_RemoveOldest(t *testing.T) {
 	mockClock := newMockTime()
 
 	cache := MustNewExpirable[string, int](5, time.Minute)
-	cache.timeNow = mockClock.Now
+	cache.SetTimeNowFunc(mockClock.Now)
 
 	key, value, ok := cache.RemoveOldest()
 	r.False(ok)
@@ -771,7 +771,7 @@ func TestExpirable_RemoveOldest_AllExpired(t *testing.T) {
 	mockClock := newMockTime()
 
 	cache := MustNewExpirable[string, int](5, time.Minute)
-	cache.timeNow = mockClock.Now
+	cache.SetTimeNowFunc(mockClock.Now)
 	cache.Set("a", 1, WithTTL(30*time.Second))
 	cache.Set("b", 2, WithTTL(30*time.Second))
 
@@ -822,7 +822,7 @@ func TestExpirable_Values(t *testing.T) {
 	mockClock := newMockTime()
 
 	cache := MustNewExpirable[string, int](5, time.Minute)
-	cache.timeNow = mockClock.Now
+	cache.SetTimeNowFunc(mockClock.Now)
 
 	r.Empty(cache.Values())
 
@@ -850,7 +850,7 @@ func TestExpirable_Peek(t *testing.T) {
 
 	cache, err := NewExpirable[string, int](5, time.Minute)
 	r.NoError(err)
-	cache.timeNow = mockClock.Now
+	cache.SetTimeNowFunc(mockClock.Now)
 
 	cache.Set("a", 1)
 	cache.Set("b", 2)
@@ -890,7 +890,7 @@ func TestExpirable_GetOrSetSingleflight(t *testing.T) {
 
 	cache, err := NewExpirable[string, int](5, time.Minute)
 	r.NoError(err)
-	cache.timeNow = mockClock.Now
+	cache.SetTimeNowFunc(mockClock.Now)
 
 	// basic functionality: compute is called when key doesn't exist
 	var computeCount int32
@@ -1039,7 +1039,7 @@ func TestExpirable_WithTTL(t *testing.T) {
 
 	cache, err := NewExpirable[string, int](5, time.Minute)
 	r.NoError(err)
-	cache.timeNow = mockClock.Now
+	cache.SetTimeNowFunc(mockClock.Now)
 
 	// set with default TTL (1 minute)
 	cache.Set("default", 1)
@@ -1083,7 +1083,7 @@ func TestExpirable_WithTTL_GetOrSet(t *testing.T) {
 
 	cache, err := NewExpirable[string, int](5, time.Minute)
 	r.NoError(err)
-	cache.timeNow = mockClock.Now
+	cache.SetTimeNowFunc(mockClock.Now)
 
 	// GetOrSet with custom TTL
 	val, err := cache.GetOrSet("key", func() (int, error) {
@@ -1106,7 +1106,7 @@ func TestExpirable_WithTTL_GetOrSetSingleflight(t *testing.T) {
 
 	cache, err := NewExpirable[string, int](5, time.Minute)
 	r.NoError(err)
-	cache.timeNow = mockClock.Now
+	cache.SetTimeNowFunc(mockClock.Now)
 
 	// GetOrSetSingleflight with custom TTL
 	val, err := cache.GetOrSetSingleflight("key", func() (int, error) {
@@ -1129,7 +1129,7 @@ func TestExpirable_WithTTL_ZeroUsesDefault(t *testing.T) {
 
 	cache, err := NewExpirable[string, int](5, time.Minute)
 	r.NoError(err)
-	cache.timeNow = mockClock.Now
+	cache.SetTimeNowFunc(mockClock.Now)
 
 	// WithTTL(0) should use default TTL
 	cache.Set("key", 42, WithTTL(0))
