@@ -685,6 +685,7 @@ func TestCache_GetOrSetSingleflight_Concurrent(t *testing.T) {
 	var computeCount int32
 	var wg sync.WaitGroup
 	results := make([]int, goroutines)
+	errs := make([]error, goroutines)
 
 	// all goroutines try to get the same key concurrently
 	for i := 0; i < goroutines; i++ {
@@ -695,8 +696,8 @@ func TestCache_GetOrSetSingleflight_Concurrent(t *testing.T) {
 				atomic.AddInt32(&computeCount, 1)
 				return 42, nil
 			})
-			r.NoError(err)
 			results[idx] = val
+			errs[idx] = err
 		}(i)
 	}
 	wg.Wait()
@@ -706,6 +707,7 @@ func TestCache_GetOrSetSingleflight_Concurrent(t *testing.T) {
 
 	// all results should be the same
 	for i, result := range results {
+		r.NoError(errs[i], "goroutine %d", i)
 		r.Equal(42, result, "goroutine %d got wrong result", i)
 	}
 }

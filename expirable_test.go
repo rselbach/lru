@@ -599,12 +599,23 @@ func TestExpirable_SetTTL(t *testing.T) {
 }
 
 func TestExpirable_SetTTLConcurrentWrites(t *testing.T) {
+	r := require.New(t)
 	cache := MustNewExpirable[int, int](128, time.Minute)
 
 	const iterations = 1000
 
 	start := make(chan struct{})
 	done := make(chan struct{})
+	errs := make(chan error, 8)
+
+	// reportErr forwards the first errors to the test goroutine without
+	// blocking; panicking or failing from a worker would be unreliable
+	reportErr := func(err error) {
+		select {
+		case errs <- err:
+		default:
+		}
+	}
 
 	var ttlWG sync.WaitGroup
 	ttlWG.Add(1)
@@ -620,7 +631,8 @@ func TestExpirable_SetTTLConcurrentWrites(t *testing.T) {
 
 			ttl := time.Duration(i%10+1) * time.Second
 			if err := cache.SetTTL(ttl); err != nil {
-				panic(err)
+				reportErr(err)
+				return
 			}
 		}
 	}()
@@ -641,13 +653,15 @@ func TestExpirable_SetTTLConcurrentWrites(t *testing.T) {
 					if _, err := cache.GetOrSet(key, func() (int, error) {
 						return i, nil
 					}); err != nil {
-						panic(err)
+						reportErr(err)
+						return
 					}
 				default:
 					if _, err := cache.GetOrSetSingleflight(key, func() (int, error) {
 						return i, nil
 					}); err != nil {
-						panic(err)
+						reportErr(err)
+						return
 					}
 				}
 			}
@@ -658,6 +672,11 @@ func TestExpirable_SetTTLConcurrentWrites(t *testing.T) {
 	writerWG.Wait()
 	close(done)
 	ttlWG.Wait()
+	close(errs)
+
+	for err := range errs {
+		r.NoError(err)
+	}
 }
 
 func TestExpirable_LRUEviction(t *testing.T) {
@@ -1067,6 +1086,7 @@ func TestExpirable_GetOrSetSingleflight_Concurrent(t *testing.T) {
 	var computeCount int32
 	var wg sync.WaitGroup
 	results := make([]int, goroutines)
+	errs := make([]error, goroutines)
 
 	// all goroutines try to get the same key concurrently
 	for i := 0; i < goroutines; i++ {
@@ -1077,8 +1097,8 @@ func TestExpirable_GetOrSetSingleflight_Concurrent(t *testing.T) {
 				atomic.AddInt32(&computeCount, 1)
 				return 42, nil
 			})
-			r.NoError(err)
 			results[idx] = val
+			errs[idx] = err
 		}(i)
 	}
 	wg.Wait()
@@ -1088,6 +1108,7 @@ func TestExpirable_GetOrSetSingleflight_Concurrent(t *testing.T) {
 
 	// all results should be the same
 	for i, result := range results {
+		r.NoError(errs[i], "goroutine %d", i)
 		r.Equal(42, result, "goroutine %d got wrong result", i)
 	}
 }
