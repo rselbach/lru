@@ -18,6 +18,8 @@ type expirableEntry[K comparable, V any] struct {
 // Expirable represents a thread-safe, fixed-size LRU cache with expiry functionality.
 // Each entry has an absolute expiration time set when written via [Expirable.Set] or
 // [Expirable.GetOrSet]. The TTL is not refreshed on reads (no sliding expiration).
+// An entry is still returned at exactly its expiration instant and is treated
+// as expired strictly after it.
 // An Expirable must be created with [NewExpirable] or [MustNewExpirable]; the zero value is not ready for use.
 type Expirable[K comparable, V any] struct {
 	capacity int
@@ -724,6 +726,9 @@ func (c *Expirable[K, V]) SetTTL(ttl time.Duration) error {
 //
 // The interval must be greater than zero. Calling StartJanitor while the janitor
 // is already running is a no-op.
+//
+// The janitor goroutine runs until [Expirable.StopJanitor] is called;
+// abandoning the cache without stopping the janitor leaks the goroutine.
 func (c *Expirable[K, V]) StartJanitor(interval time.Duration) error {
 	if interval <= 0 {
 		return errors.New("janitor interval must be greater than zero")
@@ -765,6 +770,10 @@ func (c *Expirable[K, V]) runJanitor(interval time.Duration, stop <-chan struct{
 // StopJanitor stops the background expiry cleanup goroutine if it is running.
 // Calling StopJanitor when the janitor is not running is a no-op. StopJanitor
 // waits for the goroutine to exit before returning.
+//
+// Do not call StopJanitor from an eviction callback fired by the janitor
+// itself: StopJanitor waits for the janitor goroutine, which is blocked
+// invoking the callback, so the call would deadlock.
 func (c *Expirable[K, V]) StopJanitor() {
 	c.janitorMu.Lock()
 	defer c.janitorMu.Unlock()

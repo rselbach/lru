@@ -9,7 +9,7 @@ A thread-safe, generic LRU cache implementation in Go with optional TTL expirati
 - Generic implementation (Go 1.18+)
 - O(1) lookups, insertions, and deletions
 - Thread-safe for concurrent access
-- Optional time-based expiration ([Expirable])
+- Optional time-based expiration (`Expirable`)
 - Eviction callbacks
 
 ## Installation

@@ -182,6 +182,29 @@ func TestExpirable_Expiration(t *testing.T) {
 	r.Equal([]string{}, cache.Keys())
 }
 
+func TestExpirable_ExpiryBoundary(t *testing.T) {
+	r := require.New(t)
+	mockClock := newMockTime()
+
+	cache := MustNewExpirable[string, int](5, time.Minute)
+	cache.SetTimeNowFunc(mockClock.Now)
+
+	cache.Set("a", 1)
+
+	// an entry is still live at exactly its expiration instant
+	mockClock.Add(time.Minute)
+	val, found := cache.Get("a")
+	r.True(found)
+	r.Equal(1, val)
+	r.True(cache.Contains("a"))
+
+	// and expired strictly after it
+	mockClock.Add(time.Nanosecond)
+	r.False(cache.Contains("a"))
+	_, found = cache.Get("a")
+	r.False(found)
+}
+
 func TestExpirable_GetWithTTL(t *testing.T) {
 	r := require.New(t)
 	mockClock := newMockTime()
