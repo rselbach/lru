@@ -31,9 +31,10 @@ var ErrJanitorStopping = errors.New("lru: janitor is stopping")
 // zero value is not ready for use. An Expirable must not be copied after first use.
 type Expirable[K comparable, V any] struct {
 	base[K, V, expiryMeta]
-	ttl        time.Duration
-	timeNow    func() time.Time // for testing
-	nextExpiry time.Time        // conservative earliest stored expiry
+	ttl           time.Duration
+	timeNow       func() time.Time // for testing
+	nextExpiry    time.Time        // conservative earliest stored expiry
+	hasNextExpiry bool
 
 	janitorMu   sync.Mutex
 	janitorStop chan struct{}
@@ -439,6 +440,7 @@ func (c *Expirable[K, V]) resizeExpirableLocked(
 
 	var evicted []evictedItem[K, V]
 	var nextExpiry time.Time
+	hasNextExpiry := false
 	liveEvicted := 0
 	for e := c.tail; e != nil; {
 		prev := e.prev
@@ -452,14 +454,16 @@ func (c *Expirable[K, V]) resizeExpirableLocked(
 				liveToEvict--
 				liveEvicted++
 			}
-		} else if nextExpiry.IsZero() || e.meta.expiry.Before(nextExpiry) {
+		} else if !hasNextExpiry || e.meta.expiry.Before(nextExpiry) {
 			nextExpiry = e.meta.expiry
+			hasNextExpiry = true
 		}
 		e = prev
 	}
 
 	c.capacity = capacity
 	c.nextExpiry = nextExpiry
+	c.hasNextExpiry = hasNextExpiry
 	return evicted, liveEvicted
 }
 
@@ -517,18 +521,20 @@ func (c *Expirable[K, V]) setLocked(key K, value V, ttl time.Duration, collectEv
 }
 
 func (c *Expirable[K, V]) noteExpiryLocked(expiry time.Time) {
-	if c.nextExpiry.IsZero() || expiry.Before(c.nextExpiry) {
+	if !c.hasNextExpiry || expiry.Before(c.nextExpiry) {
 		c.nextExpiry = expiry
+		c.hasNextExpiry = true
 	}
 }
 
 func (c *Expirable[K, V]) expiryDueLocked(now time.Time) bool {
-	return !c.nextExpiry.IsZero() && expiryElapsed(now, c.nextExpiry)
+	return c.hasNextExpiry && expiryElapsed(now, c.nextExpiry)
 }
 
 func (c *Expirable[K, V]) removeExpiredLocked(now time.Time, collect bool) []evictedItem[K, V] {
 	var expired []evictedItem[K, V]
 	var nextExpiry time.Time
+	hasNextExpiry := false
 	for e := c.head; e != nil; {
 		next := e.next
 		if expiryElapsed(now, e.meta.expiry) {
@@ -536,12 +542,14 @@ func (c *Expirable[K, V]) removeExpiredLocked(now time.Time, collect bool) []evi
 				expired = append(expired, evictedItem[K, V]{key: e.key, val: e.val})
 			}
 			c.deleteEntry(e)
-		} else if nextExpiry.IsZero() || e.meta.expiry.Before(nextExpiry) {
+		} else if !hasNextExpiry || e.meta.expiry.Before(nextExpiry) {
 			nextExpiry = e.meta.expiry
+			hasNextExpiry = true
 		}
 		e = next
 	}
 	c.nextExpiry = nextExpiry
+	c.hasNextExpiry = hasNextExpiry
 	return expired
 }
 
@@ -686,6 +694,7 @@ func (c *Expirable[K, V]) Clear() {
 
 	c.resetLocked()
 	c.nextExpiry = time.Time{}
+	c.hasNextExpiry = false
 	c.mu.Unlock()
 
 	for _, e := range evicted {

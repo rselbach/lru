@@ -775,6 +775,7 @@ func TestExpirable_TracksEarliestExpiry(t *testing.T) {
 	cache.Set("default", 1)
 	cache.Set("short", 2, WithTTL(30*time.Second))
 
+	r.True(cache.hasNextExpiry)
 	r.Equal(start.Add(30*time.Second), cache.nextExpiry)
 	r.False(cache.expiryDueLocked(start.Add(30 * time.Second)))
 	r.True(cache.expiryDueLocked(start.Add(30*time.Second + time.Nanosecond)))
@@ -784,7 +785,26 @@ func TestExpirable_TracksEarliestExpiry(t *testing.T) {
 	r.Equal(start.Add(time.Minute), cache.nextExpiry)
 
 	cache.Clear()
+	r.False(cache.hasNextExpiry)
+}
+
+func TestExpirable_ZeroTimeExpiryIsTracked(t *testing.T) {
+	r := require.New(t)
+	now := time.Time{}.Add(-time.Nanosecond)
+	cache := MustNewExpirable[string, int](2, time.Hour)
+	cache.SetTimeNowFunc(func() time.Time { return now })
+
+	cache.Set("live", 1)
+	cache.Set("expired", 2, WithTTL(time.Nanosecond))
+	r.True(cache.hasNextExpiry)
 	r.True(cache.nextExpiry.IsZero())
+
+	now = time.Time{}.Add(time.Nanosecond)
+	cache.Set("new", 3)
+
+	r.True(cache.Contains("live"))
+	r.False(cache.Contains("expired"))
+	r.True(cache.Contains("new"))
 }
 
 func TestExpirable_SetPurgesExpiredBeforeLiveEviction(t *testing.T) {
