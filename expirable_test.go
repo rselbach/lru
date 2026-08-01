@@ -640,7 +640,7 @@ func TestExpirable_SetTTL(t *testing.T) {
 
 	// Try setting to invalid value
 	err = cache.SetTTL(0)
-	r.Error(err)
+	r.ErrorIs(err, ErrInvalidTTL)
 	r.Equal(30*time.Second, cache.TTL()) // should not change
 
 	// Add an item with the new TTL
@@ -1356,7 +1356,7 @@ func TestExpirable_WithTTL_GetOrSetSingleflight(t *testing.T) {
 	r.False(cache.Contains("key"))
 }
 
-func TestExpirable_WithTTL_NonPositiveUsesDefault(t *testing.T) {
+func TestExpirable_WithTTL_RejectsNonPositiveValues(t *testing.T) {
 	tests := map[string]struct {
 		ttl time.Duration
 	}{
@@ -1367,22 +1367,28 @@ func TestExpirable_WithTTL_NonPositiveUsesDefault(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			r := require.New(t)
-			mockClock := newMockTime()
+			cache := MustNewExpirable[string, int](5, time.Minute)
+			cache.Set("existing", 1)
 
-			cache, err := NewExpirable[string, int](5, time.Minute)
-			r.NoError(err)
-			cache.SetTimeNowFunc(mockClock.Now)
+			r.PanicsWithValue(ErrInvalidTTL, func() {
+				cache.Set("new", 42, WithTTL(tc.ttl))
+			})
 
-			// a non-positive TTL should fall back to the default TTL
-			cache.Set("key", 42, WithTTL(tc.ttl))
+			computed := false
+			_, err := cache.GetOrSet("existing", func() (int, error) {
+				computed = true
+				return 42, nil
+			}, WithTTL(tc.ttl))
+			r.ErrorIs(err, ErrInvalidTTL)
+			r.False(computed)
 
-			// should still be there at 55 seconds
-			mockClock.Add(55 * time.Second)
-			r.True(cache.Contains("key"))
-
-			// should be gone at 65 seconds (past 1 minute default)
-			mockClock.Add(10 * time.Second)
-			r.False(cache.Contains("key"))
+			_, err = cache.GetOrSetSingleflight("new", func() (int, error) {
+				computed = true
+				return 42, nil
+			}, WithTTL(tc.ttl))
+			r.ErrorIs(err, ErrInvalidTTL)
+			r.False(computed)
+			r.Equal(1, cache.PhysicalLen())
 		})
 	}
 }

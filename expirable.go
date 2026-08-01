@@ -11,6 +11,9 @@ type expiryMeta struct {
 	expiry time.Time
 }
 
+// ErrInvalidTTL is returned when a TTL override is zero or negative.
+var ErrInvalidTTL = errors.New("TTL must be greater than zero")
+
 // ErrJanitorStopping is returned when StartJanitor is called while a previously
 // signaled janitor is still exiting.
 var ErrJanitorStopping = errors.New("lru: janitor is stopping")
@@ -34,24 +37,38 @@ type Expirable[K comparable, V any] struct {
 
 // setOptions holds optional parameters for Set operations.
 type setOptions struct {
-	ttl time.Duration
+	ttl    time.Duration
+	ttlSet bool
 }
 
 // SetOption is a functional option for [Expirable.Set], [Expirable.GetOrSet],
 // and [Expirable.GetOrSetSingleflight].
 type SetOption func(*setOptions)
 
-// WithTTL sets a custom TTL for the entry being set, overriding the cache's default TTL.
-// If ttl is zero or negative, the cache's default TTL is used instead.
+// WithTTL sets a custom TTL for the entry being set, overriding the cache's
+// default TTL. The TTL must be greater than zero. [Expirable.Set] panics with
+// [ErrInvalidTTL] for an invalid override; GetOrSet methods return the error.
 func WithTTL(ttl time.Duration) SetOption {
 	return func(o *setOptions) {
 		o.ttl = ttl
+		o.ttlSet = true
 	}
+}
+
+func resolveSetOptions(opts []SetOption) (setOptions, error) {
+	opt := setOptions{}
+	for _, apply := range opts {
+		apply(&opt)
+	}
+	if opt.ttlSet && opt.ttl <= 0 {
+		return setOptions{}, ErrInvalidTTL
+	}
+	return opt, nil
 }
 
 // resolveTTL returns the effective TTL for a set. Caller must hold c.mu.
 func (c *Expirable[K, V]) resolveTTL(opt setOptions) time.Duration {
-	if opt.ttl > 0 {
+	if opt.ttlSet {
 		return opt.ttl
 	}
 	return c.ttl
@@ -66,7 +83,7 @@ func NewExpirable[K comparable, V any](capacity int, ttl time.Duration) (*Expira
 		return nil, errors.New("capacity must be greater than zero")
 	}
 	if ttl <= 0 {
-		return nil, errors.New("TTL must be greater than zero")
+		return nil, ErrInvalidTTL
 	}
 
 	return &Expirable[K, V]{
@@ -210,15 +227,15 @@ func (c *Expirable[K, V]) GetOrSet(key K, compute func() (V, error), opts ...Set
 		var zero V
 		return zero, err
 	}
+	opt, err := resolveSetOptions(opts)
+	if err != nil {
+		var zero V
+		return zero, err
+	}
 
 	// fast path: check if item exists and is not expired
 	if val, found := c.Get(key); found {
 		return val, nil
-	}
-
-	opt := setOptions{}
-	for _, o := range opts {
-		o(&opt)
 	}
 
 	// compute the value outside the lock to avoid deadlock if compute
@@ -277,15 +294,15 @@ func (c *Expirable[K, V]) GetOrSetSingleflight(key K, compute func() (V, error),
 		var zero V
 		return zero, err
 	}
+	opt, err := resolveSetOptions(opts)
+	if err != nil {
+		var zero V
+		return zero, err
+	}
 
 	// fast path: check if item exists and is not expired
 	if val, found := c.Get(key); found {
 		return val, nil
-	}
-
-	opt := setOptions{}
-	for _, o := range opts {
-		o(&opt)
 	}
 
 	// use singleflight to deduplicate concurrent computes for the same typed key
@@ -351,15 +368,14 @@ func (c *Expirable[K, V]) GetOrSetSingleflight(key K, compute func() (V, error),
 //
 // Options can be passed to customize the entry, such as [WithTTL] to override
 // the cache's default TTL for this specific entry. Set panics with
-// [ErrInvalidKey] if key cannot be represented safely by the cache.
+// [ErrInvalidKey] for an invalid key and [ErrInvalidTTL] for an invalid TTL.
 func (c *Expirable[K, V]) Set(key K, value V, opts ...SetOption) {
 	if err := validateKey(key); err != nil {
 		panic(err)
 	}
-
-	opt := setOptions{}
-	for _, o := range opts {
-		o(&opt)
+	opt, err := resolveSetOptions(opts)
+	if err != nil {
+		panic(err)
 	}
 
 	c.mu.Lock()
@@ -738,7 +754,7 @@ func (c *Expirable[K, V]) TTL() time.Duration {
 // It does not affect existing entries.
 func (c *Expirable[K, V]) SetTTL(ttl time.Duration) error {
 	if ttl <= 0 {
-		return errors.New("TTL must be greater than zero")
+		return ErrInvalidTTL
 	}
 
 	c.mu.Lock()
