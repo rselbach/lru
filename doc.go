@@ -24,6 +24,10 @@
 //	    return expensiveComputation()
 //	})
 //
+// If another goroutine inserts the key while compute runs, that stored value is
+// returned and the result of compute is discarded. compute must be safe to
+// abandon (no unreclaimed side effects), or use GetOrSetSingleflight.
+//
 // For expensive computations where concurrent cache misses for the same key should
 // only trigger a single computation, use [Cache.GetOrSetSingleflight]:
 //
@@ -48,11 +52,18 @@
 //	cache.Set("shortLived", 42, lru.WithTTL(30*time.Second))
 //	cache.Set("longLived", 100, lru.WithTTL(1*time.Hour))
 //
-// Expired entries are removed lazily on access. When a write needs capacity,
-// expired entries are purged before evicting a non-expired LRU entry. Call
-// [Expirable.RemoveExpired] to explicitly purge all expired entries.
-// Applications that want periodic background cleanup can opt in with
-// [Expirable.StartJanitor] and stop it with [Expirable.StopJanitor].
+// Concurrent [Expirable.GetOrSetSingleflight] callers that share an in-flight key
+// share the leader's computed value and the leader's effective TTL; a waiter's
+// [WithTTL] option is not applied.
+//
+// Expired entries are removed lazily on access. They still occupy capacity until
+// purged, so a cache full of expired entries must purge on write (automatic when
+// a Set needs a slot), via [Expirable.RemoveExpired], or via the optional janitor.
+// [Expirable.Len] reports only non-expired entries.
+//
+// When a write needs capacity, expired entries are purged before evicting a
+// non-expired LRU entry. Applications that want periodic background cleanup can
+// opt in with [Expirable.StartJanitor] and stop it with [Expirable.StopJanitor].
 //
 // # Sharded Cache
 //
@@ -60,6 +71,12 @@
 // to reduce lock contention. It is not a global LRU: each shard enforces its own
 // capacity and recency order. Methods such as [Sharded.Keys] return a
 // point-in-time snapshot grouped by shard, not global recency order.
+// [Sharded.Len], [Sharded.Clear], and [Sharded.OnEvict] are likewise applied
+// per shard and are not atomic across the whole cache.
+//
+// Shard selection uses a fast path for common key types (strings and integers).
+// Other comparable keys fall back to fmt formatting; prefer string or integer
+// keys on hot paths. Types with identical fmt output can share a shard.
 //
 // # Eviction Callbacks
 //
@@ -69,12 +86,21 @@
 //	    fmt.Printf("evicted: %s=%d\n", key, value)
 //	})
 //
-// Callbacks are invoked for capacity evictions, explicit removals via
-// [Cache.Remove], [Cache.RemoveOldest], and [Cache.Clear]. For [Expirable.Clear],
-// callbacks are only invoked for entries that have not yet expired. Expired
-// entries removed by [Expirable.RemoveExpired] or capacity cleanup also trigger
-// callbacks. Resize and Clear report evicted entries in order from least
-// recently used to most recently used.
+// When OnEvict runs:
+//
+//   - Capacity eviction: Cache, Expirable, and Sharded
+//   - [Cache.Remove] / [Expirable.Remove] / [Sharded.Remove]: yes (Expirable
+//     includes already-expired entries still present in storage)
+//   - [Cache.RemoveOldest] / [Expirable.RemoveOldest]: yes
+//   - [Cache.Clear]: every entry, least- to most-recently used
+//   - [Expirable.Clear]: non-expired entries only, least- to most-recently used
+//   - [Expirable.RemoveExpired], janitor, and capacity expiry cleanup: yes
+//   - [Expirable.Set] replacing an already-expired entry: yes for the old value
+//   - [Cache.Resize] / [Expirable.Resize] / [Sharded.Resize]: yes for live
+//     evictions (Expirable also reports expired entries purged during resize)
+//
+// Resize and Clear report evicted entries in order from least recently used to
+// most recently used within the cache (or within each shard for [Sharded]).
 //
 // Callbacks are invoked after the cache's internal lock is released and may be
 // called concurrently from multiple goroutines. Callback implementations must

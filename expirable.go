@@ -201,6 +201,9 @@ func (c *Expirable[K, V]) GetWithTTL(key K) (V, time.Duration, bool) {
 // The compute function is only called if the key is not present in the cache or is expired.
 // Note: if multiple goroutines call GetOrSet concurrently for the same missing/expired key,
 // compute may be called multiple times but only one result will be cached.
+// If another goroutine inserts the key while compute runs, that stored value is
+// returned and the result of compute is discarded. compute must be safe to abandon
+// (no unreclaimed side effects), or use [Expirable.GetOrSetSingleflight].
 //
 // Options can be passed to customize the entry, such as [WithTTL] to override
 // the cache's default TTL for this specific entry.
@@ -265,7 +268,9 @@ func (c *Expirable[K, V]) GetOrSet(key K, compute func() (V, error), opts ...Set
 // subsequent calls return the cached value without invoking singleflight.
 //
 // Options can be passed to customize the entry, such as [WithTTL] to override
-// the cache's default TTL for this specific entry.
+// the cache's default TTL for this specific entry. Concurrent callers that share
+// an in-flight key share the leader's result and the leader's effective TTL; a
+// waiter's [WithTTL] option is not applied.
 func (c *Expirable[K, V]) GetOrSetSingleflight(key K, compute func() (V, error), opts ...SetOption) (V, error) {
 	// fast path: check if item exists and is not expired
 	if val, found := c.Get(key); found {
@@ -591,9 +596,8 @@ func (c *Expirable[K, V]) RemoveOldest() (K, V, bool) {
 }
 
 // Len returns the current number of non-expired items in the cache.
-//
-// Note: This method does not remove expired entries; it only excludes them from the count.
-// Use [Expirable.RemoveExpired] to explicitly purge expired entries.
+// It does not remove expired entries; expired entries still occupy capacity until
+// purged. Use [Expirable.RemoveExpired] to purge them.
 func (c *Expirable[K, V]) Len() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -614,7 +618,9 @@ func (c *Expirable[K, V]) Len() int {
 //
 // If an eviction callback is set, it is called only for entries that have not
 // yet expired at the time of clearing, in order from least recently used to
-// most recently used, matching [Expirable.Resize].
+// most recently used. Already-expired entries are dropped without a callback;
+// use [Expirable.RemoveExpired] first if those must be observed. This differs
+// from [Expirable.Remove], which reports expired entries still present in storage.
 func (c *Expirable[K, V]) Clear() {
 	c.mu.Lock()
 	onEvict := c.onEvict

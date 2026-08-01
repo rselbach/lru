@@ -50,6 +50,10 @@ func MustNewSharded[K comparable, V any](capacity int) *Sharded[K, V] {
 // NewShardedWithCount creates a new sharded LRU cache with the given total capacity
 // and number of shards. The capacity is distributed evenly across all shards.
 // Both capacity and shardCount must be greater than zero.
+//
+// Shard selection uses a fast path for strings and integers. Other comparable
+// keys fall back to fmt formatting; prefer string or integer keys on hot paths.
+// Types with identical fmt output can share a shard.
 func NewShardedWithCount[K comparable, V any](capacity, shardCount int) (*Sharded[K, V], error) {
 	if capacity <= 0 {
 		return nil, errors.New("capacity must be greater than zero")
@@ -157,6 +161,9 @@ func (s *Sharded[K, V]) Peek(key K) (V, bool) {
 // The compute function is only called if the key is not present in the cache.
 // Note: if multiple goroutines call GetOrSet concurrently for the same missing key,
 // compute may be called multiple times but only one result will be cached.
+// If another goroutine inserts the key while compute runs, that stored value is
+// returned and the result of compute is discarded. compute must be safe to abandon
+// (no unreclaimed side effects), or use [Sharded.GetOrSetSingleflight].
 func (s *Sharded[K, V]) GetOrSet(key K, compute func() (V, error)) (V, error) {
 	return s.getShard(key).GetOrSet(key, compute)
 }
@@ -186,7 +193,8 @@ func (s *Sharded[K, V]) Remove(key K) bool {
 }
 
 // Len returns the current number of items in the cache across all shards.
-// The result is a point-in-time snapshot and may not reflect concurrent updates.
+// The result is a point-in-time snapshot taken per shard and is not atomic with
+// respect to concurrent updates across shards.
 func (s *Sharded[K, V]) Len() int {
 	total := 0
 	for _, shard := range s.shards {
@@ -196,6 +204,7 @@ func (s *Sharded[K, V]) Len() int {
 }
 
 // Clear removes all items from all shards.
+// Shards are cleared one at a time; the operation is not atomic across shards.
 func (s *Sharded[K, V]) Clear() {
 	for _, shard := range s.shards {
 		shard.Clear()

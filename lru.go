@@ -100,6 +100,9 @@ func (c *Cache[K, V]) Peek(key K) (V, bool) {
 // The compute function is only called if the key is not present in the cache.
 // Note: if multiple goroutines call GetOrSet concurrently for the same missing key,
 // compute may be called multiple times but only one result will be cached.
+// If another goroutine inserts the key while compute runs, that stored value is
+// returned and the result of compute is discarded. compute must be safe to abandon
+// (no unreclaimed side effects), or use [Cache.GetOrSetSingleflight].
 func (c *Cache[K, V]) GetOrSet(key K, compute func() (V, error)) (V, error) {
 	// fast path: check if item exists
 	if val, found := c.Get(key); found {
