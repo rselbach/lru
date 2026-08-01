@@ -3,6 +3,7 @@ name: Tests
 on:
   push:
     branches: [ main ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
 
@@ -12,8 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # 1.18 is the minimum version declared in go.mod
-        go-version: [ '1.18', '1.24', '1.25' ]
+        # 1.18 is the minimum version declared in go.mod.
+        go-version: [ '1.18', 'oldstable', 'stable' ]
 
     steps:
     - name: Checkout code
