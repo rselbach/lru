@@ -6,13 +6,9 @@ import (
 	"time"
 )
 
-// expirableEntry is an intrusive doubly-linked list node with expiry.
-type expirableEntry[K comparable, V any] struct {
-	key    K
-	val    V
+// expiryMeta is the per-entry metadata stored in an Expirable cache node.
+type expiryMeta struct {
 	expiry time.Time
-	prev   *expirableEntry[K, V]
-	next   *expirableEntry[K, V]
 }
 
 // Expirable represents a thread-safe, fixed-size LRU cache with expiry functionality.
@@ -22,15 +18,9 @@ type expirableEntry[K comparable, V any] struct {
 // as expired strictly after it.
 // An Expirable must be created with [NewExpirable] or [MustNewExpirable]; the zero value is not ready for use.
 type Expirable[K comparable, V any] struct {
-	capacity int
-	items    map[K]*expirableEntry[K, V]
-	head     *expirableEntry[K, V] // most recently used
-	tail     *expirableEntry[K, V] // least recently used
-	mu       sync.RWMutex
-	ttl      time.Duration
-	timeNow  func() time.Time  // for testing
-	onEvict  OnEvictFunc[K, V] // callback for evictions
-	sfGroup  flightGroup[K, V]
+	base[K, V, expiryMeta]
+	ttl     time.Duration
+	timeNow func() time.Time // for testing
 
 	janitorMu   sync.Mutex
 	janitorStop chan struct{}
@@ -75,10 +65,9 @@ func NewExpirable[K comparable, V any](capacity int, ttl time.Duration) (*Expira
 	}
 
 	return &Expirable[K, V]{
-		capacity: capacity,
-		items:    make(map[K]*expirableEntry[K, V], capacity),
-		ttl:      ttl,
-		timeNow:  time.Now,
+		base:    newBase[K, V, expiryMeta](capacity),
+		ttl:     ttl,
+		timeNow: time.Now,
 	}, nil
 }
 
@@ -108,12 +97,11 @@ func (c *Expirable[K, V]) Get(key K) (V, bool) {
 	}
 
 	// check if the entry has expired
-	if c.timeNow().After(e.expiry) {
+	if c.timeNow().After(e.meta.expiry) {
 		evictedKey := e.key
 		evictedVal := e.val
 		onEvict := c.onEvict
-		delete(c.items, e.key)
-		c.removeEntry(e)
+		c.deleteEntry(e)
 		c.mu.Unlock()
 
 		if onEvict != nil {
@@ -147,7 +135,7 @@ func (c *Expirable[K, V]) Peek(key K) (V, bool) {
 		return zero, false
 	}
 
-	if c.timeNow().After(e.expiry) {
+	if c.timeNow().After(e.meta.expiry) {
 		return zero, false
 	}
 
@@ -170,12 +158,11 @@ func (c *Expirable[K, V]) GetWithTTL(key K) (V, time.Duration, bool) {
 
 	now := c.timeNow()
 	// check if the entry has expired
-	if now.After(e.expiry) {
+	if now.After(e.meta.expiry) {
 		evictedKey := e.key
 		evictedVal := e.val
 		onEvict := c.onEvict
-		delete(c.items, e.key)
-		c.removeEntry(e)
+		c.deleteEntry(e)
 		c.mu.Unlock()
 
 		if onEvict != nil {
@@ -187,7 +174,7 @@ func (c *Expirable[K, V]) GetWithTTL(key K) (V, time.Duration, bool) {
 	c.moveToFront(e)
 
 	// calculate remaining TTL
-	ttl := e.expiry.Sub(now)
+	ttl := e.meta.expiry.Sub(now)
 	val := e.val
 	c.mu.Unlock()
 
@@ -226,9 +213,9 @@ func (c *Expirable[K, V]) GetOrSet(key K, compute func() (V, error), opts ...Set
 	c.mu.Lock()
 	// check again in case it was added while we were computing
 	e, found := c.items[key]
-	var expiredEntry *expirableEntry[K, V]
+	var expiredEntry *entry[K, V, expiryMeta]
 	if found {
-		if !c.timeNow().After(e.expiry) {
+		if !c.timeNow().After(e.meta.expiry) {
 			c.moveToFront(e)
 			val := e.val
 			c.mu.Unlock()
@@ -236,8 +223,7 @@ func (c *Expirable[K, V]) GetOrSet(key K, compute func() (V, error), opts ...Set
 		}
 		// expired entry, remove it and save for callback
 		expiredEntry = e
-		delete(c.items, key)
-		c.removeEntry(e)
+		c.deleteEntry(e)
 	}
 
 	onEvict := c.onEvict
@@ -294,9 +280,9 @@ func (c *Expirable[K, V]) GetOrSetSingleflight(key K, compute func() (V, error),
 		c.mu.Lock()
 		// check again in case it was added while we were computing
 		e, found := c.items[key]
-		var expiredEntry *expirableEntry[K, V]
+		var expiredEntry *entry[K, V, expiryMeta]
 		if found {
-			if !c.timeNow().After(e.expiry) {
+			if !c.timeNow().After(e.meta.expiry) {
 				c.moveToFront(e)
 				existingVal := e.val
 				c.mu.Unlock()
@@ -304,8 +290,7 @@ func (c *Expirable[K, V]) GetOrSetSingleflight(key K, compute func() (V, error),
 			}
 			// expired entry, remove it and save for callback
 			expiredEntry = e
-			delete(c.items, key)
-			c.removeEntry(e)
+			c.deleteEntry(e)
 		}
 
 		onEvict := c.onEvict
@@ -370,22 +355,8 @@ func (c *Expirable[K, V]) Resize(capacity int) (int, error) {
 	c.mu.Lock()
 	onEvict := c.onEvict
 	evicted := c.removeExpiredLocked(c.timeNow(), onEvict != nil)
-	liveEvicted := 0
-
-	for len(c.items) > capacity {
-		oldest := c.tail
-		if oldest == nil {
-			break
-		}
-		if onEvict != nil {
-			evicted = append(evicted, evictedItem[K, V]{key: oldest.key, val: oldest.val})
-		}
-		delete(c.items, oldest.key)
-		c.removeEntry(oldest)
-		liveEvicted++
-	}
-
-	c.capacity = capacity
+	liveItems, liveEvicted := c.resizeLocked(capacity, onEvict != nil)
+	evicted = append(evicted, liveItems...)
 	c.mu.Unlock()
 
 	for _, e := range evicted {
@@ -406,12 +377,12 @@ func (c *Expirable[K, V]) setLocked(key K, value V, ttl time.Duration, collectEv
 		var evicted []evictedItem[K, V]
 		// replacing an expired entry retires its dead value, so report it to
 		// the eviction callback like any other expiry removal
-		if collectEvicted && now.After(e.expiry) {
+		if collectEvicted && now.After(e.meta.expiry) {
 			evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
 		}
 		c.moveToFront(e)
 		e.val = value
-		e.expiry = now.Add(ttl)
+		e.meta.expiry = now.Add(ttl)
 		return evicted
 	}
 
@@ -430,16 +401,15 @@ func (c *Expirable[K, V]) setLocked(key K, value V, ttl time.Duration, collectEv
 			if collectEvicted {
 				evicted = append(evicted, evictedItem[K, V]{key: oldest.key, val: oldest.val})
 			}
-			delete(c.items, oldest.key)
-			c.removeEntry(oldest)
+			c.deleteEntry(oldest)
 		}
 	}
 
 	// add new item
-	e := &expirableEntry[K, V]{
-		key:    key,
-		val:    value,
-		expiry: now.Add(ttl),
+	e := &entry[K, V, expiryMeta]{
+		key:  key,
+		val:  value,
+		meta: expiryMeta{expiry: now.Add(ttl)},
 	}
 	c.pushFront(e)
 	c.items[key] = e
@@ -450,54 +420,15 @@ func (c *Expirable[K, V]) removeExpiredLocked(now time.Time, collect bool) []evi
 	var expired []evictedItem[K, V]
 	for e := c.head; e != nil; {
 		next := e.next
-		if now.After(e.expiry) {
+		if now.After(e.meta.expiry) {
 			if collect {
 				expired = append(expired, evictedItem[K, V]{key: e.key, val: e.val})
 			}
-			delete(c.items, e.key)
-			c.removeEntry(e)
+			c.deleteEntry(e)
 		}
 		e = next
 	}
 	return expired
-}
-
-// moveToFront moves an entry to the front of the list.
-func (c *Expirable[K, V]) moveToFront(e *expirableEntry[K, V]) {
-	if c.head == e {
-		return
-	}
-	c.removeEntry(e)
-	c.pushFront(e)
-}
-
-// pushFront adds an entry to the front of the list.
-func (c *Expirable[K, V]) pushFront(e *expirableEntry[K, V]) {
-	e.prev = nil
-	e.next = c.head
-	if c.head != nil {
-		c.head.prev = e
-	}
-	c.head = e
-	if c.tail == nil {
-		c.tail = e
-	}
-}
-
-// removeEntry removes an entry from the list.
-func (c *Expirable[K, V]) removeEntry(e *expirableEntry[K, V]) {
-	if e.prev != nil {
-		e.prev.next = e.next
-	} else {
-		c.head = e.next
-	}
-	if e.next != nil {
-		e.next.prev = e.prev
-	} else {
-		c.tail = e.prev
-	}
-	e.prev = nil
-	e.next = nil
 }
 
 // Remove deletes an item from the cache by key.
@@ -514,8 +445,7 @@ func (c *Expirable[K, V]) Remove(key K) bool {
 	evictedVal := e.val
 	onEvict := c.onEvict
 
-	delete(c.items, key)
-	c.removeEntry(e)
+	c.deleteEntry(e)
 	c.mu.Unlock()
 
 	if onEvict != nil {
@@ -534,7 +464,7 @@ func (c *Expirable[K, V]) GetOldest() (K, V, bool) {
 	now := c.timeNow()
 
 	for e := c.tail; e != nil; e = e.prev {
-		if !now.After(e.expiry) {
+		if !now.After(e.meta.expiry) {
 			return e.key, e.val, true
 		}
 	}
@@ -558,12 +488,11 @@ func (c *Expirable[K, V]) RemoveOldest() (K, V, bool) {
 
 	for e := c.tail; e != nil; {
 		prev := e.prev
-		if now.After(e.expiry) {
+		if now.After(e.meta.expiry) {
 			if onEvict != nil {
 				evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
 			}
-			delete(c.items, e.key)
-			c.removeEntry(e)
+			c.deleteEntry(e)
 			e = prev
 			continue
 		}
@@ -574,8 +503,7 @@ func (c *Expirable[K, V]) RemoveOldest() (K, V, bool) {
 		if onEvict != nil {
 			evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
 		}
-		delete(c.items, e.key)
-		c.removeEntry(e)
+		c.deleteEntry(e)
 		break
 	}
 
@@ -604,7 +532,7 @@ func (c *Expirable[K, V]) Len() int {
 	now := c.timeNow()
 
 	for _, e := range c.items {
-		if !now.After(e.expiry) {
+		if !now.After(e.meta.expiry) {
 			count++
 		}
 	}
@@ -636,15 +564,13 @@ func (c *Expirable[K, V]) Clear() {
 		now := c.timeNow()
 		evicted = make([]evictedItem[K, V], 0, len(c.items))
 		for e := c.tail; e != nil; e = e.prev {
-			if !now.After(e.expiry) {
+			if !now.After(e.meta.expiry) {
 				evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
 			}
 		}
 	}
 
-	c.items = make(map[K]*expirableEntry[K, V], c.capacity)
-	c.head = nil
-	c.tail = nil
+	c.resetLocked()
 	c.mu.Unlock()
 
 	for _, e := range evicted {
@@ -665,7 +591,7 @@ func (c *Expirable[K, V]) Contains(key K) bool {
 		return false
 	}
 
-	return !c.timeNow().After(e.expiry)
+	return !c.timeNow().After(e.meta.expiry)
 }
 
 // Keys returns a slice of all keys in the cache that haven't expired.
@@ -678,7 +604,7 @@ func (c *Expirable[K, V]) Keys() []K {
 	keys := make([]K, 0, len(c.items))
 
 	for e := c.head; e != nil; e = e.next {
-		if !now.After(e.expiry) {
+		if !now.After(e.meta.expiry) {
 			keys = append(keys, e.key)
 		}
 	}
@@ -696,20 +622,12 @@ func (c *Expirable[K, V]) Values() []V {
 	values := make([]V, 0, len(c.items))
 
 	for e := c.head; e != nil; e = e.next {
-		if !now.After(e.expiry) {
+		if !now.After(e.meta.expiry) {
 			values = append(values, e.val)
 		}
 	}
 
 	return values
-}
-
-// Capacity returns the maximum capacity of the cache.
-func (c *Expirable[K, V]) Capacity() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	return c.capacity
 }
 
 // TTL returns the time-to-live duration for cache entries.
@@ -854,10 +772,7 @@ func (c *Expirable[K, V]) signalStopJanitorLocked() {
 // The callback is invoked after the cache's internal lock is released and may be called
 // concurrently from multiple goroutines. It must be safe for concurrent use.
 func (c *Expirable[K, V]) OnEvict(f OnEvictFunc[K, V]) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.onEvict = f
+	c.base.OnEvict(f)
 }
 
 // SetTimeNowFunc replaces the function used to get the current time.
@@ -885,12 +800,11 @@ func (c *Expirable[K, V]) RemoveExpired() int {
 	var expired []evictedItem[K, V]
 	for e := c.head; e != nil; {
 		next := e.next
-		if now.After(e.expiry) {
+		if now.After(e.meta.expiry) {
 			if onEvict != nil {
 				expired = append(expired, evictedItem[K, V]{key: e.key, val: e.val})
 			}
-			delete(c.items, e.key)
-			c.removeEntry(e)
+			c.deleteEntry(e)
 			removed++
 		}
 		e = next
