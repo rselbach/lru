@@ -103,8 +103,8 @@
 //   - [Cache.Remove] / [Expirable.Remove] / [Sharded.Remove]: yes (Expirable
 //     includes already-expired entries still present in storage)
 //   - [Cache.RemoveOldest] / [Expirable.RemoveOldest]: yes
-//   - [Cache.Clear]: every entry, least- to most-recently used
-//   - [Expirable.Clear]: non-expired entries only, least- to most-recently used
+//   - [Cache.Clear] / [Expirable.Clear]: every stored entry, least- to
+//     most-recently used, including unpurged expired entries
 //   - [Expirable.RemoveExpired], janitor, and capacity expiry cleanup: yes
 //   - [Expirable.Set] replacing an already-expired entry: yes for the old value
 //   - [Cache.Resize] / [Expirable.Resize] / [Sharded.Resize]: yes for live

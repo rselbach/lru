@@ -248,9 +248,9 @@ func TestExpirable_Clear(t *testing.T) {
 	cache.Set("c", 30)              // update c's TTL
 	mockClock.Add(31 * time.Second) // now a and b are expired but c is not
 
-	// Clear should only call callback for non-expired items
+	// Clear reports every physically stored item, including expired entries.
 	cache.Clear()
-	r.Equal(map[string]int{"c": 30}, evicted)
+	r.Equal(map[string]int{"a": 1, "b": 2, "c": 30}, evicted)
 }
 
 func TestExpirable_OnEvictConcurrentReplacement(t *testing.T) {

@@ -646,23 +646,18 @@ func (c *Expirable[K, V]) PhysicalLen() int {
 
 // Clear removes all items from the cache.
 //
-// If an eviction callback is set, it is called only for entries that have not
-// yet expired at the time of clearing, in order from least recently used to
-// most recently used. Already-expired entries are dropped without a callback;
-// use [Expirable.RemoveExpired] first if those must be observed. This differs
-// from [Expirable.Remove], which reports expired entries still present in storage.
+// If an eviction callback is set, it is called for every stored entry in order
+// from least recently used to most recently used, including entries that have
+// already expired but have not yet been purged.
 func (c *Expirable[K, V]) Clear() {
 	c.mu.Lock()
 	onEvict := c.onEvict
 
 	var evicted []evictedItem[K, V]
 	if onEvict != nil {
-		now := c.timeNow()
 		evicted = make([]evictedItem[K, V], 0, len(c.items))
 		for e := c.tail; e != nil; e = e.prev {
-			if !now.After(e.meta.expiry) {
-				evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
-			}
+			evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
 		}
 	}
 
