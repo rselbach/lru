@@ -224,7 +224,7 @@ func (s *Sharded[K, V]) Contains(key K) bool {
 // The result is a point-in-time snapshot and is not atomic with respect to
 // concurrent updates.
 func (s *Sharded[K, V]) Keys() []K {
-	keys := make([]K, 0, s.Len())
+	keys := make([]K, 0, s.Capacity())
 	for _, shard := range s.shards {
 		keys = append(keys, shard.Keys()...)
 	}
@@ -239,7 +239,7 @@ func (s *Sharded[K, V]) Keys() []K {
 // The result is a point-in-time snapshot and is not atomic with respect to
 // concurrent updates.
 func (s *Sharded[K, V]) Values() []V {
-	values := make([]V, 0, s.Len())
+	values := make([]V, 0, s.Capacity())
 	for _, shard := range s.shards {
 		values = append(values, shard.Values()...)
 	}
@@ -329,6 +329,10 @@ func (s *Sharded[K, V]) Resize(capacity int) (int, error) {
 // from multiple goroutines operating on the same shard. It must be safe for
 // concurrent use.
 func (s *Sharded[K, V]) OnEvict(f OnEvictFunc[K, V]) {
+	// Serialize against Resize and concurrent OnEvict so all shards observe
+	// the same callback; in-flight evictions may still use a prior callback.
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, shard := range s.shards {
 		shard.OnEvict(f)
 	}

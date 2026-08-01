@@ -54,15 +54,12 @@ func WithTTL(ttl time.Duration) SetOption {
 	}
 }
 
-func (c *Expirable[K, V]) ttlForSet(opt setOptions) time.Duration {
+// resolveTTL returns the effective TTL for a set. Caller must hold c.mu.
+func (c *Expirable[K, V]) resolveTTL(opt setOptions) time.Duration {
 	if opt.ttl > 0 {
 		return opt.ttl
 	}
-
-	c.mu.RLock()
-	ttl := c.ttl
-	c.mu.RUnlock()
-	return ttl
+	return c.ttl
 }
 
 // NewExpirable creates a new LRU cache with the given capacity and TTL.
@@ -217,7 +214,6 @@ func (c *Expirable[K, V]) GetOrSet(key K, compute func() (V, error), opts ...Set
 	for _, o := range opts {
 		o(&opt)
 	}
-	ttl := c.ttlForSet(opt)
 
 	// compute the value outside the lock to avoid deadlock if compute
 	// calls back into the cache
@@ -245,7 +241,7 @@ func (c *Expirable[K, V]) GetOrSet(key K, compute func() (V, error), opts ...Set
 	}
 
 	onEvict := c.onEvict
-	evicted := c.setLocked(key, val, ttl, onEvict != nil)
+	evicted := c.setLocked(key, val, c.resolveTTL(opt), onEvict != nil)
 	c.mu.Unlock()
 
 	if onEvict != nil {
@@ -281,7 +277,6 @@ func (c *Expirable[K, V]) GetOrSetSingleflight(key K, compute func() (V, error),
 	for _, o := range opts {
 		o(&opt)
 	}
-	ttl := c.ttlForSet(opt)
 
 	// use singleflight to deduplicate concurrent computes for the same typed key
 	result, err := c.sfGroup.Do(key, func() (V, error) {
@@ -314,7 +309,7 @@ func (c *Expirable[K, V]) GetOrSetSingleflight(key K, compute func() (V, error),
 		}
 
 		onEvict := c.onEvict
-		evicted := c.setLocked(key, val, ttl, onEvict != nil)
+		evicted := c.setLocked(key, val, c.resolveTTL(opt), onEvict != nil)
 		c.mu.Unlock()
 
 		if onEvict != nil {
@@ -351,11 +346,10 @@ func (c *Expirable[K, V]) Set(key K, value V, opts ...SetOption) {
 	for _, o := range opts {
 		o(&opt)
 	}
-	ttl := c.ttlForSet(opt)
 
 	c.mu.Lock()
 	onEvict := c.onEvict
-	evicted := c.setLocked(key, value, ttl, onEvict != nil)
+	evicted := c.setLocked(key, value, c.resolveTTL(opt), onEvict != nil)
 	c.mu.Unlock()
 
 	for _, e := range evicted {
@@ -405,17 +399,19 @@ func (c *Expirable[K, V]) Resize(capacity int) (int, error) {
 // it assumes the mutex is already locked.
 // Returns entries removed due to expiry cleanup or capacity eviction.
 func (c *Expirable[K, V]) setLocked(key K, value V, ttl time.Duration, collectEvicted bool) []evictedItem[K, V] {
+	now := c.timeNow()
+
 	// if key exists, update value and expiry and move to front
 	if e, found := c.items[key]; found {
 		var evicted []evictedItem[K, V]
 		// replacing an expired entry retires its dead value, so report it to
 		// the eviction callback like any other expiry removal
-		if collectEvicted && c.timeNow().After(e.expiry) {
+		if collectEvicted && now.After(e.expiry) {
 			evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
 		}
 		c.moveToFront(e)
 		e.val = value
-		e.expiry = c.timeNow().Add(ttl)
+		e.expiry = now.Add(ttl)
 		return evicted
 	}
 
@@ -424,7 +420,7 @@ func (c *Expirable[K, V]) setLocked(key K, value V, ttl time.Duration, collectEv
 	// If physical storage is full, purge expired entries before evicting a live
 	// least recently used entry.
 	if len(c.items) >= c.capacity {
-		evicted = c.removeExpiredLocked(c.timeNow(), collectEvicted)
+		evicted = c.removeExpiredLocked(now, collectEvicted)
 	}
 
 	// If we're still at capacity, remove the least recently used item.
@@ -443,7 +439,7 @@ func (c *Expirable[K, V]) setLocked(key K, value V, ttl time.Duration, collectEv
 	e := &expirableEntry[K, V]{
 		key:    key,
 		val:    value,
-		expiry: c.timeNow().Add(ttl),
+		expiry: now.Add(ttl),
 	}
 	c.pushFront(e)
 	c.items[key] = e
