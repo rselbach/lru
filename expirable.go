@@ -11,6 +11,10 @@ type expiryMeta struct {
 	expiry time.Time
 }
 
+func expiryElapsed(now, expiry time.Time) bool {
+	return now.After(expiry)
+}
+
 // ErrInvalidTTL is returned when a TTL override is zero or negative.
 var ErrInvalidTTL = errors.New("TTL must be greater than zero")
 
@@ -123,7 +127,7 @@ func (c *Expirable[K, V]) Get(key K) (V, bool) {
 	}
 
 	// check if the entry has expired
-	if c.timeNow().After(e.meta.expiry) {
+	if expiryElapsed(c.timeNow(), e.meta.expiry) {
 		evictedKey := e.key
 		evictedVal := e.val
 		onEvict := c.onEvict
@@ -164,7 +168,7 @@ func (c *Expirable[K, V]) Peek(key K) (V, bool) {
 		return zero, false
 	}
 
-	if c.timeNow().After(e.meta.expiry) {
+	if expiryElapsed(c.timeNow(), e.meta.expiry) {
 		return zero, false
 	}
 
@@ -190,7 +194,7 @@ func (c *Expirable[K, V]) GetWithTTL(key K) (V, time.Duration, bool) {
 
 	now := c.timeNow()
 	// check if the entry has expired
-	if now.After(e.meta.expiry) {
+	if expiryElapsed(now, e.meta.expiry) {
 		evictedKey := e.key
 		evictedVal := e.val
 		onEvict := c.onEvict
@@ -252,7 +256,7 @@ func (c *Expirable[K, V]) GetOrSet(key K, compute func() (V, error), opts ...Set
 	e, found := c.items[key]
 	var expiredEntry *entry[K, V, expiryMeta]
 	if found {
-		if !c.timeNow().After(e.meta.expiry) {
+		if !expiryElapsed(c.timeNow(), e.meta.expiry) {
 			c.moveToFront(e)
 			val := e.val
 			c.mu.Unlock()
@@ -325,7 +329,7 @@ func (c *Expirable[K, V]) GetOrSetSingleflight(key K, compute func() (V, error),
 		e, found := c.items[key]
 		var expiredEntry *entry[K, V, expiryMeta]
 		if found {
-			if !c.timeNow().After(e.meta.expiry) {
+			if !expiryElapsed(c.timeNow(), e.meta.expiry) {
 				c.moveToFront(e)
 				existingVal := e.val
 				c.mu.Unlock()
@@ -423,7 +427,7 @@ func (c *Expirable[K, V]) resizeExpirableLocked(
 ) ([]evictedItem[K, V], int) {
 	liveCount := 0
 	for e := c.tail; e != nil; e = e.prev {
-		if !now.After(e.meta.expiry) {
+		if !expiryElapsed(now, e.meta.expiry) {
 			liveCount++
 		}
 	}
@@ -438,7 +442,7 @@ func (c *Expirable[K, V]) resizeExpirableLocked(
 	liveEvicted := 0
 	for e := c.tail; e != nil; {
 		prev := e.prev
-		expired := now.After(e.meta.expiry)
+		expired := expiryElapsed(now, e.meta.expiry)
 		if expired || liveToEvict > 0 {
 			if collect {
 				evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
@@ -471,7 +475,7 @@ func (c *Expirable[K, V]) setLocked(key K, value V, ttl time.Duration, collectEv
 		var evicted []evictedItem[K, V]
 		// replacing an expired entry retires its dead value, so report it to
 		// the eviction callback like any other expiry removal
-		if collectEvicted && now.After(e.meta.expiry) {
+		if collectEvicted && expiryElapsed(now, e.meta.expiry) {
 			evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
 		}
 		c.moveToFront(e)
@@ -519,7 +523,7 @@ func (c *Expirable[K, V]) noteExpiryLocked(expiry time.Time) {
 }
 
 func (c *Expirable[K, V]) expiryDueLocked(now time.Time) bool {
-	return !c.nextExpiry.IsZero() && now.After(c.nextExpiry)
+	return !c.nextExpiry.IsZero() && expiryElapsed(now, c.nextExpiry)
 }
 
 func (c *Expirable[K, V]) removeExpiredLocked(now time.Time, collect bool) []evictedItem[K, V] {
@@ -527,7 +531,7 @@ func (c *Expirable[K, V]) removeExpiredLocked(now time.Time, collect bool) []evi
 	var nextExpiry time.Time
 	for e := c.head; e != nil; {
 		next := e.next
-		if now.After(e.meta.expiry) {
+		if expiryElapsed(now, e.meta.expiry) {
 			if collect {
 				expired = append(expired, evictedItem[K, V]{key: e.key, val: e.val})
 			}
@@ -578,7 +582,7 @@ func (c *Expirable[K, V]) GetOldest() (K, V, bool) {
 	now := c.timeNow()
 
 	for e := c.tail; e != nil; e = e.prev {
-		if !now.After(e.meta.expiry) {
+		if !expiryElapsed(now, e.meta.expiry) {
 			return e.key, e.val, true
 		}
 	}
@@ -602,7 +606,7 @@ func (c *Expirable[K, V]) RemoveOldest() (K, V, bool) {
 
 	for e := c.tail; e != nil; {
 		prev := e.prev
-		if now.After(e.meta.expiry) {
+		if expiryElapsed(now, e.meta.expiry) {
 			if onEvict != nil {
 				evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
 			}
@@ -648,7 +652,7 @@ func (c *Expirable[K, V]) Len() int {
 func (c *Expirable[K, V]) liveLenLocked(now time.Time) int {
 	count := 0
 	for _, e := range c.items {
-		if !now.After(e.meta.expiry) {
+		if !expiryElapsed(now, e.meta.expiry) {
 			count++
 		}
 	}
@@ -706,7 +710,7 @@ func (c *Expirable[K, V]) Contains(key K) bool {
 		return false
 	}
 
-	return !c.timeNow().After(e.meta.expiry)
+	return !expiryElapsed(c.timeNow(), e.meta.expiry)
 }
 
 // Keys returns a slice of all keys in the cache that haven't expired.
@@ -719,7 +723,7 @@ func (c *Expirable[K, V]) Keys() []K {
 	keys := make([]K, 0, c.liveLenLocked(now))
 
 	for e := c.head; e != nil; e = e.next {
-		if !now.After(e.meta.expiry) {
+		if !expiryElapsed(now, e.meta.expiry) {
 			keys = append(keys, e.key)
 		}
 	}
@@ -737,7 +741,7 @@ func (c *Expirable[K, V]) Values() []V {
 	values := make([]V, 0, c.liveLenLocked(now))
 
 	for e := c.head; e != nil; e = e.next {
-		if !now.After(e.meta.expiry) {
+		if !expiryElapsed(now, e.meta.expiry) {
 			values = append(values, e.val)
 		}
 	}
