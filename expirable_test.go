@@ -176,10 +176,29 @@ func TestExpirable_Expiration(t *testing.T) {
 
 	// Now all items should be expired
 	r.Equal(0, cache.Len())
+	// expired entries still occupy storage until purged
+	r.Equal(3, cache.PhysicalLen())
 	r.False(cache.Contains("a"))
 	r.False(cache.Contains("b"))
 	r.False(cache.Contains("c"))
 	r.Equal([]string{}, cache.Keys())
+
+	r.Equal(3, cache.RemoveExpired())
+	r.Equal(0, cache.PhysicalLen())
+}
+
+func TestExpirable_PhysicalLen(t *testing.T) {
+	r := require.New(t)
+	cache := MustNewExpirable[string, int](5, time.Minute)
+
+	r.Equal(0, cache.PhysicalLen())
+	cache.Set("a", 1)
+	cache.Set("b", 2)
+	r.Equal(2, cache.PhysicalLen())
+	r.Equal(cache.Len(), cache.PhysicalLen())
+
+	cache.Remove("a")
+	r.Equal(1, cache.PhysicalLen())
 }
 
 func TestExpirable_ExpiryBoundary(t *testing.T) {

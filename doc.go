@@ -59,7 +59,8 @@
 // Expired entries are removed lazily on access. They still occupy capacity until
 // purged, so a cache full of expired entries must purge on write (automatic when
 // a Set needs a slot), via [Expirable.RemoveExpired], or via the optional janitor.
-// [Expirable.Len] reports only non-expired entries.
+// [Expirable.Len] reports only non-expired entries (O(n)); [Expirable.PhysicalLen]
+// reports entries still stored, including expired ones not yet purged (O(1)).
 //
 // When a write needs capacity, expired entries are purged before evicting a
 // non-expired LRU entry. Applications that want periodic background cleanup can

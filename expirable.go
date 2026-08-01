@@ -592,8 +592,10 @@ func (c *Expirable[K, V]) RemoveOldest() (K, V, bool) {
 }
 
 // Len returns the current number of non-expired items in the cache.
-// It does not remove expired entries; expired entries still occupy capacity until
-// purged. Use [Expirable.RemoveExpired] to purge them.
+// It is O(n) in the number of stored entries because expiry is evaluated against
+// the current time without purging. Expired entries still occupy capacity until
+// removed; use [Expirable.PhysicalLen] for the stored entry count and
+// [Expirable.RemoveExpired] to purge them.
 func (c *Expirable[K, V]) Len() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -608,6 +610,14 @@ func (c *Expirable[K, V]) Len() int {
 	}
 
 	return count
+}
+
+// PhysicalLen returns the number of entries stored in the cache, including
+// expired entries that have not yet been purged. It is O(1).
+func (c *Expirable[K, V]) PhysicalLen() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.items)
 }
 
 // Clear removes all items from the cache.
