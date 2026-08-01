@@ -19,8 +19,9 @@ type expiryMeta struct {
 // An Expirable must be created with [NewExpirable] or [MustNewExpirable]; the zero value is not ready for use.
 type Expirable[K comparable, V any] struct {
 	base[K, V, expiryMeta]
-	ttl     time.Duration
-	timeNow func() time.Time // for testing
+	ttl        time.Duration
+	timeNow    func() time.Time // for testing
+	nextExpiry time.Time        // conservative earliest stored expiry
 
 	janitorMu   sync.Mutex
 	janitorStop chan struct{}
@@ -341,7 +342,8 @@ func (c *Expirable[K, V]) GetOrSetSingleflight(key K, compute func() (V, error),
 // If a new key would exceed capacity, expired entries are removed before
 // evicting a non-expired least recently used entry. Otherwise expired items are
 // removed lazily on access or via RemoveExpired. The capacity cleanup scans the
-// cache only when physical storage is full.
+// cache only when physical storage is full and the earliest possible expiry
+// has passed.
 //
 // Options can be passed to customize the entry, such as [WithTTL] to override
 // the cache's default TTL for this specific entry. Set panics with
@@ -395,6 +397,7 @@ func (c *Expirable[K, V]) Resize(capacity int) (int, error) {
 // Returns entries removed due to expiry cleanup or capacity eviction.
 func (c *Expirable[K, V]) setLocked(key K, value V, ttl time.Duration, collectEvicted bool) []evictedItem[K, V] {
 	now := c.timeNow()
+	expiry := now.Add(ttl)
 
 	// if key exists, update value and expiry and move to front
 	if e, found := c.items[key]; found {
@@ -406,15 +409,16 @@ func (c *Expirable[K, V]) setLocked(key K, value V, ttl time.Duration, collectEv
 		}
 		c.moveToFront(e)
 		e.val = value
-		e.meta.expiry = now.Add(ttl)
+		e.meta.expiry = expiry
+		c.noteExpiryLocked(expiry)
 		return evicted
 	}
 
 	var evicted []evictedItem[K, V]
 
-	// If physical storage is full, purge expired entries before evicting a live
-	// least recently used entry.
-	if len(c.items) >= c.capacity {
+	// If physical storage is full and an entry may have expired, purge expired
+	// entries before evicting a live least recently used entry.
+	if len(c.items) >= c.capacity && c.expiryDueLocked(now) {
 		evicted = c.removeExpiredLocked(now, collectEvicted)
 	}
 
@@ -433,15 +437,27 @@ func (c *Expirable[K, V]) setLocked(key K, value V, ttl time.Duration, collectEv
 	e := &entry[K, V, expiryMeta]{
 		key:  key,
 		val:  value,
-		meta: expiryMeta{expiry: now.Add(ttl)},
+		meta: expiryMeta{expiry: expiry},
 	}
 	c.pushFront(e)
 	c.items[key] = e
+	c.noteExpiryLocked(expiry)
 	return evicted
+}
+
+func (c *Expirable[K, V]) noteExpiryLocked(expiry time.Time) {
+	if c.nextExpiry.IsZero() || expiry.Before(c.nextExpiry) {
+		c.nextExpiry = expiry
+	}
+}
+
+func (c *Expirable[K, V]) expiryDueLocked(now time.Time) bool {
+	return !c.nextExpiry.IsZero() && now.After(c.nextExpiry)
 }
 
 func (c *Expirable[K, V]) removeExpiredLocked(now time.Time, collect bool) []evictedItem[K, V] {
 	var expired []evictedItem[K, V]
+	var nextExpiry time.Time
 	for e := c.head; e != nil; {
 		next := e.next
 		if now.After(e.meta.expiry) {
@@ -449,9 +465,12 @@ func (c *Expirable[K, V]) removeExpiredLocked(now time.Time, collect bool) []evi
 				expired = append(expired, evictedItem[K, V]{key: e.key, val: e.val})
 			}
 			c.deleteEntry(e)
+		} else if nextExpiry.IsZero() || e.meta.expiry.Before(nextExpiry) {
+			nextExpiry = e.meta.expiry
 		}
 		e = next
 	}
+	c.nextExpiry = nextExpiry
 	return expired
 }
 
@@ -599,6 +618,7 @@ func (c *Expirable[K, V]) Clear() {
 	}
 
 	c.resetLocked()
+	c.nextExpiry = time.Time{}
 	c.mu.Unlock()
 
 	for _, e := range evicted {
@@ -825,29 +845,15 @@ func (c *Expirable[K, V]) SetTimeNowFunc(f func() time.Time) {
 func (c *Expirable[K, V]) RemoveExpired() int {
 	c.mu.Lock()
 
-	now := c.timeNow()
 	onEvict := c.onEvict
-	removed := 0
-
-	var expired []evictedItem[K, V]
-	for e := c.head; e != nil; {
-		next := e.next
-		if now.After(e.meta.expiry) {
-			if onEvict != nil {
-				expired = append(expired, evictedItem[K, V]{key: e.key, val: e.val})
-			}
-			c.deleteEntry(e)
-			removed++
-		}
-		e = next
-	}
+	before := len(c.items)
+	expired := c.removeExpiredLocked(c.timeNow(), onEvict != nil)
+	removed := before - len(c.items)
 
 	c.mu.Unlock()
 
-	if onEvict != nil {
-		for _, e := range expired {
-			onEvict(e.key, e.val)
-		}
+	for _, e := range expired {
+		onEvict(e.key, e.val)
 	}
 
 	return removed

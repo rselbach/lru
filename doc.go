@@ -69,9 +69,11 @@
 // [Expirable.Len] reports only non-expired entries (O(n)); [Expirable.PhysicalLen]
 // reports entries still stored, including expired ones not yet purged (O(1)).
 //
-// When a write needs capacity, expired entries are purged before evicting a
-// non-expired LRU entry. Applications that want periodic background cleanup can
-// opt in with [Expirable.StartJanitor] and stop it with [Expirable.StopJanitor]
+// When a write needs capacity and the earliest possible expiry is due, expired
+// entries are purged before evicting a non-expired LRU entry. The purge is O(n),
+// but full writes remain O(1) while no expiry is due. Applications that want
+// periodic background cleanup can opt in with [Expirable.StartJanitor] and stop
+// it with [Expirable.StopJanitor]
 // (or [Expirable.SignalStopJanitor] from a janitor-driven eviction callback).
 //
 // # Sharded Cache

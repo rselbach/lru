@@ -8,7 +8,8 @@ expiration, sharding, and eviction callbacks.
 ## Features
 
 - Generic implementation (Go 1.18+)
-- O(1) lookups, insertions, and deletions
+- O(1) lookups, insertions, and deletions in the standard cache
+- Expirable writes avoid cleanup scans until the earliest expiry is due
 - Thread-safe for concurrent access
 - Optional time-based expiration (`Expirable`)
 - Sharded cache for reduced lock contention (`Sharded`)

@@ -166,7 +166,7 @@ func TestExpirable_OnEvict(t *testing.T) {
 	// The expired items won't be evicted until accessed or RemoveExpired is called
 	r.Equal(map[string]int{"a": 1, "b": 2}, evicted)
 
-	// Set does NOT trigger expiration cleanup (for O(1) performance)
+	// Set below physical capacity does not trigger expiration cleanup.
 	cache.Set("e", 5)
 	r.Equal(map[string]int{"a": 1, "b": 2}, evicted)
 

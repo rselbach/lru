@@ -764,6 +764,28 @@ func TestExpirable_LRUEviction(t *testing.T) {
 	r.Equal([]string{"d", "a", "c"}, cache.Keys())
 }
 
+func TestExpirable_TracksEarliestExpiry(t *testing.T) {
+	r := require.New(t)
+	mockClock := newMockTime()
+	start := mockClock.Now()
+
+	cache := MustNewExpirable[string, int](3, time.Minute)
+	cache.SetTimeNowFunc(mockClock.Now)
+	cache.Set("default", 1)
+	cache.Set("short", 2, WithTTL(30*time.Second))
+
+	r.Equal(start.Add(30*time.Second), cache.nextExpiry)
+	r.False(cache.expiryDueLocked(start.Add(30 * time.Second)))
+	r.True(cache.expiryDueLocked(start.Add(30*time.Second + time.Nanosecond)))
+
+	mockClock.Add(31 * time.Second)
+	r.Equal(1, cache.RemoveExpired())
+	r.Equal(start.Add(time.Minute), cache.nextExpiry)
+
+	cache.Clear()
+	r.True(cache.nextExpiry.IsZero())
+}
+
 func TestExpirable_SetPurgesExpiredBeforeLiveEviction(t *testing.T) {
 	r := require.New(t)
 	mockClock := newMockTime()
