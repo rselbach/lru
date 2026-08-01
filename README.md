@@ -5,6 +5,17 @@
 A thread-safe, generic LRU cache implementation in Go with optional TTL
 expiration, sharding, and eviction callbacks.
 
+## Version 2
+
+Version 2 uses the `github.com/rselbach/lru/v2` import path. Compared with v1:
+
+- non-positive `WithTTL` overrides are rejected instead of using the default;
+- explicit shard counts greater than capacity return an error instead of being
+  clamped; and
+- `Expirable.Clear` reports unpurged expired entries to eviction callbacks.
+
+The v1 API remains available at `github.com/rselbach/lru`.
+
 ## Features
 
 - Generic implementation (Go 1.18+)
