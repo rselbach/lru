@@ -487,22 +487,20 @@ func TestExpirable_SignalStopJanitorFromOnEvict(t *testing.T) {
 	r := require.New(t)
 	cache := MustNewExpirable[string, int](5, time.Minute)
 
-	stopped := make(chan struct{}, 1)
+	restartErr := make(chan error, 1)
 	cache.OnEvict(func(string, int) {
 		cache.SignalStopJanitor()
-		select {
-		case stopped <- struct{}{}:
-		default:
-		}
+		restartErr <- cache.StartJanitor(2 * time.Millisecond)
 	})
 
 	cache.Set("a", 1, WithTTL(5*time.Millisecond))
 	r.NoError(cache.StartJanitor(2 * time.Millisecond))
 
 	select {
-	case <-stopped:
+	case err := <-restartErr:
+		r.ErrorIs(err, ErrJanitorStopping)
 	case <-time.After(time.Second):
-		t.Fatal("OnEvict did not run")
+		t.Fatal("OnEvict did not run or StartJanitor blocked")
 	}
 
 	// StopJanitor must still be safe after a signal and must not hang.
@@ -516,6 +514,9 @@ func TestExpirable_SignalStopJanitorFromOnEvict(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("StopJanitor hung after SignalStopJanitor from OnEvict")
 	}
+
+	r.NoError(cache.StartJanitor(2 * time.Millisecond))
+	cache.StopJanitor()
 }
 
 func TestExpirable_JanitorRemovesExpired(t *testing.T) {
@@ -605,7 +606,7 @@ func TestExpirable_JanitorConcurrentStartStop(t *testing.T) {
 	cache.StopJanitor()
 
 	for err := range errs {
-		r.NoError(err)
+		r.ErrorIs(err, ErrJanitorStopping)
 	}
 }
 

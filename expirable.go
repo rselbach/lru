@@ -11,6 +11,10 @@ type expiryMeta struct {
 	expiry time.Time
 }
 
+// ErrJanitorStopping is returned when StartJanitor is called while a previously
+// signaled janitor is still exiting.
+var ErrJanitorStopping = errors.New("lru: janitor is stopping")
+
 // Expirable represents a thread-safe, fixed-size LRU cache with expiry functionality.
 // Each entry has an absolute expiration time set when written via [Expirable.Set] or
 // [Expirable.GetOrSet]. The TTL is not refreshed on reads (no sliding expiration).
@@ -753,7 +757,7 @@ func (c *Expirable[K, V]) SetTTL(ttl time.Duration) error {
 //
 // The interval must be greater than zero. Calling StartJanitor while the janitor
 // is already running is a no-op. If a previous janitor was signaled to stop but
-// has not exited yet, StartJanitor waits for that exit before starting a new one.
+// has not exited yet, StartJanitor returns [ErrJanitorStopping].
 //
 // The janitor goroutine runs until [Expirable.StopJanitor] or
 // [Expirable.SignalStopJanitor] is called; abandoning the cache without
@@ -766,19 +770,17 @@ func (c *Expirable[K, V]) StartJanitor(interval time.Duration) error {
 	c.janitorMu.Lock()
 	defer c.janitorMu.Unlock()
 
-	// Wait out a previously signaled janitor before starting another.
-	for c.janitorStop == nil && c.janitorDone != nil {
-		done := c.janitorDone
-		c.janitorMu.Unlock()
-		<-done
-		c.janitorMu.Lock()
-		if c.janitorDone == done {
-			c.janitorDone = nil
-		}
-	}
-
 	if c.janitorStop != nil {
 		return nil
+	}
+
+	if c.janitorDone != nil {
+		select {
+		case <-c.janitorDone:
+			c.janitorDone = nil
+		default:
+			return ErrJanitorStopping
+		}
 	}
 
 	stop := make(chan struct{})
@@ -840,8 +842,8 @@ func (c *Expirable[K, V]) StopJanitor() {
 // no-op.
 //
 // [Expirable.StopJanitor] may still be used afterward to wait for exit.
-// [Expirable.StartJanitor] waits for any previously signaled janitor before
-// starting a new one.
+// [Expirable.StartJanitor] returns [ErrJanitorStopping] until a previously
+// signaled janitor has exited.
 func (c *Expirable[K, V]) SignalStopJanitor() {
 	c.janitorMu.Lock()
 	defer c.janitorMu.Unlock()
