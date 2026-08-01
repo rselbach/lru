@@ -82,7 +82,14 @@ func (g *flightGroup[K, V]) Do(key K, fn func() (V, error)) (V, error) {
 	}()
 
 	if !normalReturn {
+		// Reaching this point distinguishes a recovered panic(nil) from
+		// runtime.Goexit, which never resumes execution here on Go versions
+		// where recover returns nil for a nil panic value.
 		recovered = true
+		if !c.panicked {
+			c.panicked = true
+			c.panicValue = nil
+		}
 	}
 	return c.val, c.err
 }

@@ -25,6 +25,26 @@ func TestFlightGroup_PanicPropagatesToLeader(t *testing.T) {
 	r.Equal(7, v)
 }
 
+func TestFlightGroup_NilPanicPropagatesToLeader(t *testing.T) {
+	r := require.New(t)
+
+	var g flightGroup[string, int]
+	returned := false
+	func() {
+		defer func() {
+			_ = recover()
+		}()
+		_, _ = g.Do("k", func() (int, error) { panic(nil) })
+		returned = true
+	}()
+
+	r.False(returned, "panic(nil) must not become a successful zero result")
+
+	value, err := g.Do("k", func() (int, error) { return 7, nil })
+	r.NoError(err)
+	r.Equal(7, value)
+}
+
 func TestFlightGroup_PanicPropagatesToWaiters(t *testing.T) {
 	r := require.New(t)
 
