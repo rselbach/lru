@@ -76,9 +76,10 @@
 // [Sharded.Len], [Sharded.Clear], and [Sharded.OnEvict] are likewise applied
 // per shard and are not atomic across the whole cache.
 //
-// Shard selection uses a fast path for common key types (strings and integers).
-// Other comparable keys fall back to fmt formatting; prefer string or integer
-// keys on hot paths. Types with identical fmt output can share a shard.
+// Shard selection uses a fast path for common key types (strings, integers,
+// floats, bool). Other comparable keys fall back to fmt formatting; prefer
+// string or integer keys on hot paths. Types with identical fmt output can
+// share a shard.
 //
 // # Eviction Callbacks
 //

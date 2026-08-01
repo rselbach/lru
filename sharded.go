@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/maphash"
+	"math"
 	"sync"
 )
 
@@ -51,9 +52,9 @@ func MustNewSharded[K comparable, V any](capacity int) *Sharded[K, V] {
 // and number of shards. The capacity is distributed evenly across all shards.
 // Both capacity and shardCount must be greater than zero.
 //
-// Shard selection uses a fast path for strings and integers. Other comparable
-// keys fall back to fmt formatting; prefer string or integer keys on hot paths.
-// Types with identical fmt output can share a shard.
+// Shard selection uses a fast path for strings, integers, floats, and bool.
+// Other comparable keys fall back to fmt formatting; prefer string or integer
+// keys on hot paths. Types with identical fmt output can share a shard.
 func NewShardedWithCount[K comparable, V any](capacity, shardCount int) (*Sharded[K, V], error) {
 	if capacity <= 0 {
 		return nil, errors.New("capacity must be greater than zero")
@@ -126,6 +127,12 @@ func (s *Sharded[K, V]) shardIndex(key K) int {
 	case int32:
 		binary.LittleEndian.PutUint64(buf[:], uint64(int64(k)))
 		h.Write(buf[:])
+	case int16:
+		binary.LittleEndian.PutUint64(buf[:], uint64(int64(k)))
+		h.Write(buf[:])
+	case int8:
+		binary.LittleEndian.PutUint64(buf[:], uint64(int64(k)))
+		h.Write(buf[:])
 	case uint:
 		binary.LittleEndian.PutUint64(buf[:], uint64(k))
 		h.Write(buf[:])
@@ -135,6 +142,26 @@ func (s *Sharded[K, V]) shardIndex(key K) int {
 	case uint32:
 		binary.LittleEndian.PutUint64(buf[:], uint64(k))
 		h.Write(buf[:])
+	case uint16:
+		binary.LittleEndian.PutUint64(buf[:], uint64(k))
+		h.Write(buf[:])
+	case uint8:
+		binary.LittleEndian.PutUint64(buf[:], uint64(k))
+		h.Write(buf[:])
+	case uintptr:
+		binary.LittleEndian.PutUint64(buf[:], uint64(k))
+		h.Write(buf[:])
+	case float64:
+		binary.LittleEndian.PutUint64(buf[:], math.Float64bits(k))
+		h.Write(buf[:])
+	case float32:
+		binary.LittleEndian.PutUint64(buf[:], uint64(math.Float32bits(k)))
+		h.Write(buf[:])
+	case bool:
+		if k {
+			buf[0] = 1
+		}
+		h.Write(buf[:1])
 	default:
 		// fallback for other comparable types; maphash never returns an error
 		_, _ = fmt.Fprint(&h, key)

@@ -552,6 +552,46 @@ func TestSharded_DifferentKeyTypes(t *testing.T) {
 		r.Equal("answer", val)
 	})
 
+	t.Run("int16 keys", func(t *testing.T) {
+		r := require.New(t)
+		cache := MustNewSharded[int16, string](100)
+		cache.Set(int16(-7), "answer")
+		val, found := cache.Get(int16(-7))
+		r.True(found)
+		r.Equal("answer", val)
+	})
+
+	t.Run("uint8 keys", func(t *testing.T) {
+		r := require.New(t)
+		cache := MustNewSharded[uint8, string](100)
+		cache.Set(uint8(9), "answer")
+		val, found := cache.Get(uint8(9))
+		r.True(found)
+		r.Equal("answer", val)
+	})
+
+	t.Run("float64 keys", func(t *testing.T) {
+		r := require.New(t)
+		cache := MustNewSharded[float64, string](100)
+		cache.Set(3.14, "pi")
+		val, found := cache.Get(3.14)
+		r.True(found)
+		r.Equal("pi", val)
+	})
+
+	t.Run("bool keys", func(t *testing.T) {
+		r := require.New(t)
+		cache := MustNewSharded[bool, string](100)
+		cache.Set(true, "yes")
+		cache.Set(false, "no")
+		val, found := cache.Get(true)
+		r.True(found)
+		r.Equal("yes", val)
+		val, found = cache.Get(false)
+		r.True(found)
+		r.Equal("no", val)
+	})
+
 	type customKey struct {
 		a int
 		b string
