@@ -86,9 +86,12 @@ func MustNewExpirable[K comparable, V any](capacity int, ttl time.Duration) *Exp
 // This method also updates the item's position in the LRU list.
 // Expired items are removed when accessed.
 func (c *Expirable[K, V]) Get(key K) (V, bool) {
-	c.mu.Lock()
-
 	var zero V
+	if validateKey(key) != nil {
+		return zero, false
+	}
+
+	c.mu.Lock()
 
 	e, found := c.items[key]
 	if !found {
@@ -125,10 +128,13 @@ func (c *Expirable[K, V]) Get(key K) (V, bool) {
 // Note: Unlike [Expirable.Get], expired items are not removed from the cache.
 // Use [Expirable.RemoveExpired] to explicitly purge expired entries.
 func (c *Expirable[K, V]) Peek(key K) (V, bool) {
+	var zero V
+	if validateKey(key) != nil {
+		return zero, false
+	}
+
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-
-	var zero V
 
 	e, found := c.items[key]
 	if !found {
@@ -146,9 +152,12 @@ func (c *Expirable[K, V]) Peek(key K) (V, bool) {
 // It returns the value, remaining TTL, and a boolean indicating whether the key was found and not expired.
 // Expired items are removed when accessed.
 func (c *Expirable[K, V]) GetWithTTL(key K) (V, time.Duration, bool) {
-	c.mu.Lock()
-
 	var zero V
+	if validateKey(key) != nil {
+		return zero, 0, false
+	}
+
+	c.mu.Lock()
 
 	e, found := c.items[key]
 	if !found {
@@ -192,6 +201,11 @@ func (c *Expirable[K, V]) GetWithTTL(key K) (V, time.Duration, bool) {
 // Options can be passed to customize the entry, such as [WithTTL] to override
 // the cache's default TTL for this specific entry.
 func (c *Expirable[K, V]) GetOrSet(key K, compute func() (V, error), opts ...SetOption) (V, error) {
+	if err := validateKey(key); err != nil {
+		var zero V
+		return zero, err
+	}
+
 	// fast path: check if item exists and is not expired
 	if val, found := c.Get(key); found {
 		return val, nil
@@ -254,6 +268,11 @@ func (c *Expirable[K, V]) GetOrSet(key K, compute func() (V, error), opts ...Set
 // an in-flight key share the leader's result and the leader's effective TTL; a
 // waiter's [WithTTL] option is not applied.
 func (c *Expirable[K, V]) GetOrSetSingleflight(key K, compute func() (V, error), opts ...SetOption) (V, error) {
+	if err := validateKey(key); err != nil {
+		var zero V
+		return zero, err
+	}
+
 	// fast path: check if item exists and is not expired
 	if val, found := c.Get(key); found {
 		return val, nil
@@ -325,8 +344,13 @@ func (c *Expirable[K, V]) GetOrSetSingleflight(key K, compute func() (V, error),
 // cache only when physical storage is full.
 //
 // Options can be passed to customize the entry, such as [WithTTL] to override
-// the cache's default TTL for this specific entry.
+// the cache's default TTL for this specific entry. Set panics with
+// [ErrInvalidKey] if key cannot be represented safely by the cache.
 func (c *Expirable[K, V]) Set(key K, value V, opts ...SetOption) {
+	if err := validateKey(key); err != nil {
+		panic(err)
+	}
+
 	opt := setOptions{}
 	for _, o := range opts {
 		o(&opt)
@@ -434,6 +458,10 @@ func (c *Expirable[K, V]) removeExpiredLocked(now time.Time, collect bool) []evi
 // Remove deletes an item from the cache by key.
 // It returns whether the key was found and removed.
 func (c *Expirable[K, V]) Remove(key K) bool {
+	if validateKey(key) != nil {
+		return false
+	}
+
 	c.mu.Lock()
 	e, found := c.items[key]
 	if !found {
@@ -583,6 +611,10 @@ func (c *Expirable[K, V]) Clear() {
 // Note: This method does not remove expired entries from the cache.
 // Use [Expirable.RemoveExpired] to explicitly purge expired entries.
 func (c *Expirable[K, V]) Contains(key K) bool {
+	if validateKey(key) != nil {
+		return false
+	}
+
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 

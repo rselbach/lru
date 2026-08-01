@@ -16,6 +16,13 @@
 //	cache.Set("key", 42)
 //	value, found := cache.Get("key")
 //
+// # Keys
+//
+// Keys must be dynamically comparable and equal to themselves. In particular,
+// floating-point NaN values and composites containing NaN cannot be stored.
+// Set methods panic with [ErrInvalidKey], GetOrSet methods return it, and lookup
+// and removal methods treat invalid keys as misses.
+//
 // # Memoization with GetOrSet
 //
 // Compute values on cache miss:

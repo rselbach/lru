@@ -21,6 +21,11 @@ type flightCall[V any] struct {
 }
 
 func (g *flightGroup[K, V]) Do(key K, fn func() (V, error)) (V, error) {
+	if err := validateKey(key); err != nil {
+		var zero V
+		return zero, err
+	}
+
 	g.mu.Lock()
 	if g.calls == nil {
 		g.calls = make(map[K]*flightCall[V])

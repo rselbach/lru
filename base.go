@@ -1,6 +1,25 @@
 package lru
 
-import "sync"
+import (
+	"errors"
+	"reflect"
+	"sync"
+)
+
+// ErrInvalidKey is returned when a key is not dynamically comparable or is
+// not equal to itself, such as a floating-point NaN.
+var ErrInvalidKey = errors.New("lru: key must be dynamically comparable and equal to itself")
+
+func validateKey[K comparable](key K) error {
+	dynamicType := reflect.TypeOf(key)
+	if dynamicType != nil && !dynamicType.Comparable() {
+		return ErrInvalidKey
+	}
+	if key != key {
+		return ErrInvalidKey
+	}
+	return nil
+}
 
 // OnEvictFunc is a function that is called when an entry is evicted from the cache.
 type OnEvictFunc[K comparable, V any] func(key K, value V)

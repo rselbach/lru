@@ -111,6 +111,9 @@ func (s *Sharded[K, V]) getShard(key K) *Cache[K, V] {
 
 // shardIndex returns the shard index for the given key.
 func (s *Sharded[K, V]) shardIndex(key K) int {
+	if validateKey(key) != nil {
+		return 0
+	}
 	return int(s.hashKey(key) % uint64(len(s.shards)))
 }
 
@@ -291,6 +294,7 @@ func (s *Sharded[K, V]) GetOrSetSingleflight(key K, compute func() (V, error)) (
 // Set adds or updates an item in the cache.
 // If the key already exists, its value is updated.
 // If the shard is at capacity, the least recently used item in that shard is evicted.
+// Set panics with [ErrInvalidKey] if key cannot be represented safely by the cache.
 func (s *Sharded[K, V]) Set(key K, value V) {
 	s.getShard(key).Set(key, value)
 }
