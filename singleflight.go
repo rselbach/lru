@@ -13,6 +13,7 @@ type flightGroup[K comparable, V any] struct {
 
 type flightCall[V any] struct {
 	wg         sync.WaitGroup
+	waiters    int
 	val        V
 	err        error
 	panicked   bool
@@ -31,6 +32,7 @@ func (g *flightGroup[K, V]) Do(key K, fn func() (V, error)) (V, error) {
 		g.calls = make(map[K]*flightCall[V])
 	}
 	if c := g.calls[key]; c != nil {
+		c.waiters++
 		g.mu.Unlock()
 		c.wg.Wait()
 		if c.panicked {

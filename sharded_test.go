@@ -1148,28 +1148,37 @@ func TestSharded_GetOrSetSingleflight_Concurrent(t *testing.T) {
 	const goroutines = 100
 	var computeCount int32
 	var wg sync.WaitGroup
+	begin := make(chan struct{})
+	computeStarted := make(chan struct{})
+	release := make(chan struct{})
 	results := make([]int, goroutines)
 	errs := make([]error, goroutines)
 
-	// all goroutines try to get the same key concurrently
 	for i := 0; i < goroutines; i++ {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
+			<-begin
 			val, err := cache.GetOrSetSingleflight("shared", func() (int, error) {
-				atomic.AddInt32(&computeCount, 1)
+				if atomic.AddInt32(&computeCount, 1) == 1 {
+					close(computeStarted)
+				}
+				<-release
 				return 42, nil
 			})
 			results[idx] = val
 			errs[idx] = err
 		}(i)
 	}
+
+	close(begin)
+	<-computeStarted
+	shard := cache.getShard("shared")
+	waitForFlightWaiters(t, &shard.sfGroup, "shared", goroutines-1)
+	close(release)
 	wg.Wait()
 
-	// compute should have been called exactly once
 	r.Equal(int32(1), atomic.LoadInt32(&computeCount), "compute should be called exactly once")
-
-	// all results should be the same
 	for i, result := range results {
 		r.NoError(errs[i], "goroutine %d", i)
 		r.Equal(42, result, "goroutine %d got wrong result", i)
