@@ -252,7 +252,7 @@ func writeComparableHash(h *maphash.Hash, value reflect.Value, buf *[8]byte) {
 			return
 		}
 		writeComparableHash(h, value.Elem(), buf)
-	case reflect.Chan, reflect.Ptr, reflect.UnsafePointer:
+	case reflect.Chan, reflect.Pointer, reflect.UnsafePointer:
 		writeHashUint64(h, buf, uint64(value.Pointer()))
 	default:
 		panic("lru: unsupported comparable key kind: " + value.Kind().String())
