@@ -380,9 +380,11 @@ func (c *Expirable[K, V]) Resize(capacity int) (int, error) {
 
 	c.mu.Lock()
 	onEvict := c.onEvict
-	evicted := c.removeExpiredLocked(c.timeNow(), onEvict != nil)
-	liveItems, liveEvicted := c.resizeLocked(capacity, onEvict != nil)
-	evicted = append(evicted, liveItems...)
+	evicted, liveEvicted := c.resizeExpirableLocked(
+		capacity,
+		c.timeNow(),
+		onEvict != nil,
+	)
 	c.mu.Unlock()
 
 	for _, e := range evicted {
@@ -390,6 +392,49 @@ func (c *Expirable[K, V]) Resize(capacity int) (int, error) {
 	}
 
 	return liveEvicted, nil
+}
+
+func (c *Expirable[K, V]) resizeExpirableLocked(
+	capacity int,
+	now time.Time,
+	collect bool,
+) ([]evictedItem[K, V], int) {
+	liveCount := 0
+	for e := c.tail; e != nil; e = e.prev {
+		if !now.After(e.meta.expiry) {
+			liveCount++
+		}
+	}
+
+	liveToEvict := liveCount - capacity
+	if liveToEvict < 0 {
+		liveToEvict = 0
+	}
+
+	var evicted []evictedItem[K, V]
+	var nextExpiry time.Time
+	liveEvicted := 0
+	for e := c.tail; e != nil; {
+		prev := e.prev
+		expired := now.After(e.meta.expiry)
+		if expired || liveToEvict > 0 {
+			if collect {
+				evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
+			}
+			c.deleteEntry(e)
+			if !expired {
+				liveToEvict--
+				liveEvicted++
+			}
+		} else if nextExpiry.IsZero() || e.meta.expiry.Before(nextExpiry) {
+			nextExpiry = e.meta.expiry
+		}
+		e = prev
+	}
+
+	c.capacity = capacity
+	c.nextExpiry = nextExpiry
+	return evicted, liveEvicted
 }
 
 // setLocked is an internal method that adds or updates an item in the cache.

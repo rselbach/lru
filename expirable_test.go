@@ -901,7 +901,7 @@ func TestExpirable_Resize_PurgesExpiredBeforeLiveEviction(t *testing.T) {
 	r.Equal(1, cache.Capacity())
 	r.Equal([]string{"live-head"}, cache.Keys())
 	r.Len(cache.items, 1)
-	r.ElementsMatch([]string{"expired-middle", "expired-tail", "live-tail"}, evictedKeys)
+	r.Equal([]string{"expired-tail", "live-tail", "expired-middle"}, evictedKeys)
 }
 
 func TestExpirable_Resize_CallbackAfterUnlock(t *testing.T) {
