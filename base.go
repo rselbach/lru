@@ -2,6 +2,7 @@ package lru
 
 import (
 	"errors"
+	"math"
 	"reflect"
 	"sync"
 )
@@ -20,15 +21,79 @@ func allocationHint(size int) int {
 	return size
 }
 
-func validateKey[K comparable](key K) error {
-	dynamicType := reflect.TypeOf(key)
-	if dynamicType != nil && !dynamicType.Comparable() {
+func validateKey[K comparable](key K) (err error) {
+	switch value := any(key).(type) {
+	case string, bool,
+		int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64, uintptr:
+		return nil
+	case float32:
+		if math.IsNaN(float64(value)) {
+			return ErrInvalidKey
+		}
+		return nil
+	case float64:
+		if math.IsNaN(value) {
+			return ErrInvalidKey
+		}
+		return nil
+	case complex64:
+		if math.IsNaN(float64(real(value))) || math.IsNaN(float64(imag(value))) {
+			return ErrInvalidKey
+		}
+		return nil
+	case complex128:
+		if math.IsNaN(real(value)) || math.IsNaN(imag(value)) {
+			return ErrInvalidKey
+		}
+		return nil
+	}
+
+	if !dynamicallyComparable(reflect.ValueOf(key)) {
 		return ErrInvalidKey
 	}
+
+	// Keep comparison failures at the API boundary even for comparable types
+	// containing interface values supplied by newer Go callers.
+	defer func() {
+		if recover() != nil {
+			err = ErrInvalidKey
+		}
+	}()
 	if key != key {
 		return ErrInvalidKey
 	}
 	return nil
+}
+
+func dynamicallyComparable(value reflect.Value) bool {
+	if !value.IsValid() {
+		return true
+	}
+	if !value.Type().Comparable() {
+		return false
+	}
+
+	switch value.Kind() {
+	case reflect.Interface:
+		return value.IsNil() || dynamicallyComparable(value.Elem())
+	case reflect.Array:
+		for i := 0; i < value.Len(); i++ {
+			if !dynamicallyComparable(value.Index(i)) {
+				return false
+			}
+		}
+	case reflect.Struct:
+		for i := 0; i < value.NumField(); i++ {
+			if value.Type().Field(i).Name == "_" {
+				continue
+			}
+			if !dynamicallyComparable(value.Field(i)) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // OnEvictFunc is a function that is called when an entry is evicted from the cache.

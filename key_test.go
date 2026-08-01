@@ -2,11 +2,30 @@ package lru
 
 import (
 	"math"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestDynamicallyComparable(t *testing.T) {
+	tests := map[string]struct {
+		value any
+		want  bool
+	}{
+		"plain value":               {value: 42, want: true},
+		"comparable interface":      {value: struct{ Value any }{Value: "troy"}, want: true},
+		"uncomparable interface":    {value: struct{ Value any }{Value: []int{1}}, want: false},
+		"nested uncomparable value": {value: [1]struct{ Value any }{{Value: map[string]int{}}}, want: false},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, tc.want, dynamicallyComparable(reflect.ValueOf(tc.value)))
+		})
+	}
+}
 
 func TestCache_RejectsNonReflexiveKeys(t *testing.T) {
 	r := require.New(t)
