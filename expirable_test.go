@@ -1047,7 +1047,9 @@ func TestExpirable_Values(t *testing.T) {
 	cache := MustNewExpirable[string, int](5, time.Minute)
 	cache.SetTimeNowFunc(mockClock.Now)
 
-	r.Empty(cache.Values())
+	emptyValues := cache.Values()
+	r.Empty(emptyValues)
+	r.Zero(cap(emptyValues))
 
 	cache.Set("a", 1)
 	cache.Set("b", 2)
@@ -1063,8 +1065,12 @@ func TestExpirable_Values(t *testing.T) {
 	cache.Set("short", 4, WithTTL(30*time.Second))
 	mockClock.Add(31 * time.Second)
 
-	r.Equal([]string{"a", "c", "b"}, cache.Keys())
-	r.Equal([]int{1, 3, 2}, cache.Values())
+	keys := cache.Keys()
+	values := cache.Values()
+	r.Equal([]string{"a", "c", "b"}, keys)
+	r.Equal([]int{1, 3, 2}, values)
+	r.Equal(3, cap(keys))
+	r.Equal(3, cap(values))
 }
 
 func TestExpirable_Peek(t *testing.T) {

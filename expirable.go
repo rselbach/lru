@@ -624,15 +624,16 @@ func (c *Expirable[K, V]) Len() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	count := 0
-	now := c.timeNow()
+	return c.liveLenLocked(c.timeNow())
+}
 
+func (c *Expirable[K, V]) liveLenLocked(now time.Time) int {
+	count := 0
 	for _, e := range c.items {
 		if !now.After(e.meta.expiry) {
 			count++
 		}
 	}
-
 	return count
 }
 
@@ -697,7 +698,7 @@ func (c *Expirable[K, V]) Keys() []K {
 	defer c.mu.RUnlock()
 
 	now := c.timeNow()
-	keys := make([]K, 0, len(c.items))
+	keys := make([]K, 0, c.liveLenLocked(now))
 
 	for e := c.head; e != nil; e = e.next {
 		if !now.After(e.meta.expiry) {
@@ -715,7 +716,7 @@ func (c *Expirable[K, V]) Values() []V {
 	defer c.mu.RUnlock()
 
 	now := c.timeNow()
-	values := make([]V, 0, len(c.items))
+	values := make([]V, 0, c.liveLenLocked(now))
 
 	for e := c.head; e != nil; e = e.next {
 		if !now.After(e.meta.expiry) {

@@ -337,9 +337,9 @@ func (s *Sharded[K, V]) Contains(key K) bool {
 // The result is a point-in-time snapshot and is not atomic with respect to
 // concurrent updates.
 func (s *Sharded[K, V]) Keys() []K {
-	keys := make([]K, 0, s.Capacity())
+	keys := make([]K, 0, s.Len())
 	for _, shard := range s.shards {
-		keys = append(keys, shard.Keys()...)
+		keys = shard.appendKeys(keys)
 	}
 	return keys
 }
@@ -352,9 +352,9 @@ func (s *Sharded[K, V]) Keys() []K {
 // The result is a point-in-time snapshot and is not atomic with respect to
 // concurrent updates.
 func (s *Sharded[K, V]) Values() []V {
-	values := make([]V, 0, s.Capacity())
+	values := make([]V, 0, s.Len())
 	for _, shard := range s.shards {
-		values = append(values, shard.Values()...)
+		values = shard.appendValues(values)
 	}
 	return values
 }

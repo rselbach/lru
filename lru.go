@@ -377,11 +377,19 @@ func (c *Cache[K, V]) Keys() []K {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	keys := make([]K, 0, len(c.items))
+	return c.appendKeysLocked(make([]K, 0, len(c.items)))
+}
+
+func (c *Cache[K, V]) appendKeys(keys []K) []K {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.appendKeysLocked(keys)
+}
+
+func (c *Cache[K, V]) appendKeysLocked(keys []K) []K {
 	for e := c.head; e != nil; e = e.next {
 		keys = append(keys, e.key)
 	}
-
 	return keys
 }
 
@@ -391,10 +399,18 @@ func (c *Cache[K, V]) Values() []V {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	values := make([]V, 0, len(c.items))
+	return c.appendValuesLocked(make([]V, 0, len(c.items)))
+}
+
+func (c *Cache[K, V]) appendValues(values []V) []V {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.appendValuesLocked(values)
+}
+
+func (c *Cache[K, V]) appendValuesLocked(values []V) []V {
 	for e := c.head; e != nil; e = e.next {
 		values = append(values, e.val)
 	}
-
 	return values
 }

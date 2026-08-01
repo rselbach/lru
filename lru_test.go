@@ -18,6 +18,23 @@ func (k collidingStringKey) String() string {
 	return "same"
 }
 
+func TestAllocationHint(t *testing.T) {
+	tests := map[string]struct {
+		size int
+		want int
+	}{
+		"empty":          {size: 0, want: 0},
+		"small capacity": {size: 32, want: 32},
+		"large capacity": {size: 1_000_000, want: initialAllocationLimit},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, tc.want, allocationHint(tc.size))
+		})
+	}
+}
+
 func TestCache_New(t *testing.T) {
 	tests := map[string]struct {
 		capacity int

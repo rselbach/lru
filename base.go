@@ -10,6 +10,16 @@ import (
 // not equal to itself, such as a floating-point NaN.
 var ErrInvalidKey = errors.New("lru: key must be dynamically comparable and equal to itself")
 
+// initialAllocationLimit avoids capacity-sized allocations for sparse caches.
+const initialAllocationLimit = 1024
+
+func allocationHint(size int) int {
+	if size > initialAllocationLimit {
+		return initialAllocationLimit
+	}
+	return size
+}
+
 func validateKey[K comparable](key K) error {
 	dynamicType := reflect.TypeOf(key)
 	if dynamicType != nil && !dynamicType.Comparable() {
@@ -55,7 +65,7 @@ type base[K comparable, V any, M any] struct {
 func newBase[K comparable, V any, M any](capacity int) base[K, V, M] {
 	return base[K, V, M]{
 		capacity: capacity,
-		items:    make(map[K]*entry[K, V, M], capacity),
+		items:    make(map[K]*entry[K, V, M], allocationHint(capacity)),
 	}
 }
 
@@ -127,7 +137,7 @@ func (c *base[K, V, M]) resizeLocked(capacity int, collectEvicted bool) ([]evict
 
 // resetLocked clears all entries. Caller must hold c.mu.
 func (c *base[K, V, M]) resetLocked() {
-	c.items = make(map[K]*entry[K, V, M], c.capacity)
+	c.items = make(map[K]*entry[K, V, M], allocationHint(c.capacity))
 	c.head = nil
 	c.tail = nil
 }
