@@ -19,11 +19,12 @@ var ErrInvalidTTL = errors.New("TTL must be greater than zero")
 var ErrJanitorStopping = errors.New("lru: janitor is stopping")
 
 // Expirable represents a thread-safe, fixed-size LRU cache with expiry functionality.
-// Each entry has an absolute expiration time set when written via [Expirable.Set] or
-// [Expirable.GetOrSet]. The TTL is not refreshed on reads (no sliding expiration).
-// An entry is still returned at exactly its expiration instant and is treated
-// as expired strictly after it.
-// An Expirable must be created with [NewExpirable] or [MustNewExpirable]; the zero value is not ready for use.
+// Each entry has an absolute expiration time set when written via [Expirable.Set],
+// [Expirable.GetOrSet], or [Expirable.GetOrSetSingleflight]. The TTL is not
+// refreshed on reads (no sliding expiration). An entry is still returned at
+// exactly its expiration instant and is treated as expired strictly after it.
+// An Expirable must be created with [NewExpirable] or [MustNewExpirable]; the
+// zero value is not ready for use. An Expirable must not be copied after first use.
 type Expirable[K comparable, V any] struct {
 	base[K, V, expiryMeta]
 	ttl        time.Duration
@@ -283,7 +284,8 @@ func (c *Expirable[K, V]) GetOrSet(key K, compute func() (V, error), opts ...Set
 // This is useful when the compute function is expensive (e.g., database queries, API calls).
 //
 // The singleflight deduplication only applies to concurrent in-flight calls; once a value is cached,
-// subsequent calls return the cached value without invoking singleflight.
+// subsequent calls return the cached value without invoking singleflight. compute must not call
+// GetOrSetSingleflight recursively for the same key because it would wait on its own call.
 //
 // Options can be passed to customize the entry, such as [WithTTL] to override
 // the cache's default TTL for this specific entry. Concurrent callers that share
@@ -880,14 +882,17 @@ func (c *Expirable[K, V]) signalStopJanitorLocked() {
 // nil clears the callback. If an eviction is already in progress, it may still
 // invoke the callback that was current when that eviction released the cache lock.
 //
-// The callback is invoked after the cache's internal lock is released and may be called
-// concurrently from multiple goroutines. It must be safe for concurrent use.
+// The callback is invoked synchronously after the cache's internal lock is
+// released and before the removing method returns. It may be called concurrently
+// from multiple goroutines and must be safe for concurrent use.
 func (c *Expirable[K, V]) OnEvict(f OnEvictFunc[K, V]) {
 	c.base.OnEvict(f)
 }
 
 // SetTimeNowFunc replaces the function used to get the current time.
-// This is primarily useful for testing. Passing nil resets to time.Now.
+// This is primarily useful for testing. The function may be called concurrently
+// while a cache lock is held, so it must be concurrency-safe and must not call
+// methods on this cache. Passing nil resets to time.Now.
 func (c *Expirable[K, V]) SetTimeNowFunc(f func() time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

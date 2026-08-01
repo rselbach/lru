@@ -101,10 +101,18 @@ func ExampleCache_GetOrSetSingleflight() {
 		return fmt.Sprintf("profile-%s-page-%d", key.userID, key.page), nil
 	}
 
-	value, _ := cache.GetOrSetSingleflight(key, getPage)
+	value, err := cache.GetOrSetSingleflight(key, getPage)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
 	fmt.Printf("%s (computed: %d)\n", value, computeCount)
 
-	value, _ = cache.GetOrSetSingleflight(key, getPage)
+	value, err = cache.GetOrSetSingleflight(key, getPage)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
 	fmt.Printf("%s (computed: %d)\n", value, computeCount)
 
 	// Output:
@@ -119,7 +127,11 @@ func ExampleCache_Resize() {
 	cache.Set("c", 3)
 	cache.Set("d", 4)
 
-	evicted, _ := cache.Resize(2)
+	evicted, err := cache.Resize(2)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
 
 	fmt.Printf("evicted: %d\n", evicted)
 	fmt.Printf("capacity: %d\n", cache.Capacity())
@@ -176,6 +188,23 @@ func ExampleCache_Values() {
 	// Output:
 	// keys: [a c b]
 	// values: [1 3 2]
+}
+
+func ExampleSharded() {
+	cache, err := lru.NewShardedWithCount[string, int](8, 2)
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+
+	cache.Set("troy", 42)
+	value, found := cache.Get("troy")
+	fmt.Printf("shards: %d, capacity: %d\n", cache.ShardCount(), cache.Capacity())
+	fmt.Printf("value: %d, found: %t\n", value, found)
+
+	// Output:
+	// shards: 2, capacity: 8
+	// value: 42, found: true
 }
 
 // This example demonstrates eviction of items when the cache is at capacity.

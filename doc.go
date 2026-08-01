@@ -51,8 +51,9 @@
 //	value, ttl, found := cache.GetWithTTL("key")
 //
 // TTL is fixed per write; reads do not reset the TTL (no sliding expiration).
-// Each entry's expiration time is set when written via [Expirable.Set] or
-// [Expirable.GetOrSet] and is not extended by subsequent reads.
+// Each entry's expiration time is set when written via [Expirable.Set],
+// [Expirable.GetOrSet], or [Expirable.GetOrSetSingleflight] and is not extended
+// by subsequent reads.
 //
 // Per-entry TTL can be set using the [WithTTL] option:
 //
@@ -61,7 +62,8 @@
 //
 // Concurrent [Expirable.GetOrSetSingleflight] callers that share an in-flight key
 // share the leader's computed value and the leader's effective TTL; a waiter's
-// [WithTTL] option is not applied.
+// [WithTTL] option is not applied. A singleflight compute function must not call
+// the same cache's GetOrSetSingleflight method recursively for the same key.
 //
 // Expired entries are removed lazily on access. They still occupy capacity until
 // purged, so a cache full of expired entries must purge on write (automatic when
@@ -113,9 +115,10 @@
 // Resize and Clear report evicted entries in order from least recently used to
 // most recently used within the cache (or within each shard for [Sharded]).
 //
-// Callbacks are invoked after the cache's internal lock is released and may be
-// called concurrently from multiple goroutines. Callback implementations must
-// be safe for concurrent use. Calling OnEvict again replaces the callback for
+// Callbacks run synchronously after the cache's internal lock is released and
+// before the removing method returns. They may be called concurrently from
+// multiple goroutines, so callback implementations must be safe for concurrent
+// use. Calling OnEvict again replaces the callback for
 // future removals; passing nil clears it. A removal already in progress may use
 // the callback that was current when that removal released the cache lock.
 package lru

@@ -24,7 +24,8 @@ const DefaultShardCount = 16
 // global recency across shards.
 //
 // A Sharded must be created with [NewSharded], [MustNewSharded], [NewShardedWithCount],
-// or [MustNewShardedWithCount]; the zero value is not ready for use.
+// or [MustNewShardedWithCount]; the zero value is not ready for use. A Sharded
+// must not be copied after first use.
 type Sharded[K comparable, V any] struct {
 	shards   []*Cache[K, V]
 	seed     maphash.Seed
@@ -290,7 +291,8 @@ func (s *Sharded[K, V]) GetOrSet(key K, compute func() (V, error)) (V, error) {
 // This is useful when the compute function is expensive (e.g., database queries, API calls).
 //
 // The singleflight deduplication only applies to concurrent in-flight calls; once a value is cached,
-// subsequent calls return the cached value without invoking singleflight.
+// subsequent calls return the cached value without invoking singleflight. compute must not call
+// GetOrSetSingleflight recursively for the same key because it would wait on its own call.
 func (s *Sharded[K, V]) GetOrSetSingleflight(key K, compute func() (V, error)) (V, error) {
 	return s.getShard(key).GetOrSetSingleflight(key, compute)
 }
@@ -442,9 +444,9 @@ func (s *Sharded[K, V]) Resize(capacity int) (int, error) {
 // removals. Passing nil clears the callback. A removal already in progress may
 // still invoke the callback that was current when that shard released its lock.
 //
-// Warning: The callback may be invoked concurrently from multiple shards and
-// from multiple goroutines operating on the same shard. It must be safe for
-// concurrent use.
+// The callback runs synchronously after the relevant shard lock is released and
+// before the removing method returns. It may be invoked concurrently from multiple
+// shards and goroutines, so it must be safe for concurrent use.
 func (s *Sharded[K, V]) OnEvict(f OnEvictFunc[K, V]) {
 	// Serialize against Resize and concurrent OnEvict so all shards observe
 	// the same callback; in-flight evictions may still use a prior callback.

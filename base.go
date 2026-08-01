@@ -157,8 +157,9 @@ func (c *base[K, V, M]) Capacity() int {
 // nil clears the callback. If an eviction is already in progress, it may still
 // invoke the callback that was current when that eviction released the cache lock.
 //
-// The callback is invoked after the cache's internal lock is released and may be
-// called concurrently from multiple goroutines. It must be safe for concurrent use.
+// The callback is invoked synchronously after the cache's internal lock is
+// released and before the removing method returns. It may be called concurrently
+// from multiple goroutines and must be safe for concurrent use.
 func (c *base[K, V, M]) OnEvict(f OnEvictFunc[K, V]) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

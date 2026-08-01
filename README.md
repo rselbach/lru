@@ -14,7 +14,21 @@ expiration, sharding, and eviction callbacks.
 - Optional time-based expiration (`Expirable`)
 - Sharded cache for reduced lock contention (`Sharded`)
 - `GetOrSet` / `GetOrSetSingleflight` memoization
-- Eviction callbacks, `Resize`, and oldest-entry helpers on non-sharded caches
+- Eviction callbacks and `Resize` on every cache type
+- Oldest-entry helpers on non-sharded caches
+
+## Cache Types
+
+| Capability | `Cache` | `Expirable` | `Sharded` |
+| --- | --- | --- | --- |
+| LRU scope | Global | Global | Per shard |
+| TTL expiration | No | Yes | No |
+| `Resize` / callbacks | Yes | Yes | Yes, per shard |
+| Oldest-entry helpers | Yes | Yes | No |
+| `Len` complexity | O(1) | O(n), live entries only | O(shards) |
+
+`Get` updates recency and therefore takes an exclusive cache lock. Use `Peek`
+when a read should neither change recency nor serialize with other readers.
 
 ## Installation
 
@@ -38,7 +52,9 @@ cache.Set("key", 42)
 value, ttl, found := cache.GetWithTTL("key")
 
 // optional background purge of expired entries
-_ = cache.StartJanitor(time.Minute)
+if err := cache.StartJanitor(time.Minute); err != nil {
+    log.Fatal(err)
+}
 defer cache.StopJanitor()
 ```
 
@@ -48,6 +64,9 @@ Memoize an expensive compute, deduplicating concurrent misses:
 value, err := cache.GetOrSetSingleflight("key", func() (int, error) {
     return fetchFromDB("key")
 })
+if err != nil {
+    log.Fatal(err)
+}
 ```
 
 Sharded cache for high-concurrency workloads (per-shard LRU, not global):

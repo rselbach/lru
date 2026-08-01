@@ -5,7 +5,8 @@ import (
 )
 
 // Cache represents a thread-safe, fixed-size LRU cache.
-// A Cache must be created with [New] or [MustNew]; the zero value is not ready for use.
+// A Cache must be created with [New] or [MustNew]; the zero value is not ready
+// for use. A Cache must not be copied after first use.
 type Cache[K comparable, V any] struct {
 	base[K, V, struct{}]
 }
@@ -128,7 +129,8 @@ func (c *Cache[K, V]) GetOrSet(key K, compute func() (V, error)) (V, error) {
 // This is useful when the compute function is expensive (e.g., database queries, API calls).
 //
 // The singleflight deduplication only applies to concurrent in-flight calls; once a value is cached,
-// subsequent calls return the cached value without invoking singleflight.
+// subsequent calls return the cached value without invoking singleflight. compute must not call
+// GetOrSetSingleflight recursively for the same key because it would wait on its own call.
 func (c *Cache[K, V]) GetOrSetSingleflight(key K, compute func() (V, error)) (V, error) {
 	if err := validateKey(key); err != nil {
 		var zero V
