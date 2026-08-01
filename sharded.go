@@ -33,10 +33,15 @@ type Sharded[K comparable, V any] struct {
 }
 
 // NewSharded creates a new sharded LRU cache with the given total capacity.
-// The capacity is distributed evenly across DefaultShardCount shards.
+// The capacity is distributed evenly across up to DefaultShardCount shards.
+// Smaller caches use one shard per entry so every shard has at least one slot.
 // The capacity must be greater than zero.
 func NewSharded[K comparable, V any](capacity int) (*Sharded[K, V], error) {
-	return NewShardedWithCount[K, V](capacity, DefaultShardCount)
+	shardCount := DefaultShardCount
+	if capacity > 0 && capacity < shardCount {
+		shardCount = capacity
+	}
+	return NewShardedWithCount[K, V](capacity, shardCount)
 }
 
 // MustNewSharded creates a new sharded LRU cache with the given total capacity.
@@ -51,7 +56,8 @@ func MustNewSharded[K comparable, V any](capacity int) *Sharded[K, V] {
 
 // NewShardedWithCount creates a new sharded LRU cache with the given total capacity
 // and number of shards. The capacity is distributed evenly across all shards.
-// Both capacity and shardCount must be greater than zero.
+// Both capacity and shardCount must be greater than zero, and shardCount cannot
+// exceed capacity.
 //
 // Shard selection uses a fast path for built-in strings, integers, floats,
 // and bool. Other comparable keys are hashed recursively without invoking
@@ -63,10 +69,8 @@ func NewShardedWithCount[K comparable, V any](capacity, shardCount int) (*Sharde
 	if shardCount <= 0 {
 		return nil, errors.New("shard count must be greater than zero")
 	}
-
-	// clamp shard count to capacity so each shard has at least 1 slot
 	if shardCount > capacity {
-		shardCount = capacity
+		return nil, fmt.Errorf("shard count (%d) cannot exceed capacity (%d)", shardCount, capacity)
 	}
 
 	// distribute capacity evenly, with remainder going to first shards
@@ -94,7 +98,7 @@ func NewShardedWithCount[K comparable, V any](capacity, shardCount int) (*Sharde
 }
 
 // MustNewShardedWithCount creates a new sharded LRU cache with the given total capacity
-// and number of shards. It panics if the capacity or shard count is less than or equal to zero.
+// and number of shards. It panics if either value is non-positive or shardCount exceeds capacity.
 func MustNewShardedWithCount[K comparable, V any](capacity, shardCount int) *Sharded[K, V] {
 	cache, err := NewShardedWithCount[K, V](capacity, shardCount)
 	if err != nil {
