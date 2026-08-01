@@ -2,6 +2,7 @@ package lru
 
 import (
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -473,6 +474,64 @@ func TestSharded_ConsistentHashing(t *testing.T) {
 		r.True(found)
 		r.Equal(42, val)
 	}
+}
+
+type namedFloat64 float64
+
+type mutableShardedKey struct {
+	value string
+}
+
+func (*mutableShardedKey) String() string {
+	panic("shard hashing must not invoke String")
+}
+
+func TestSharded_EqualKeysHashIdentically(t *testing.T) {
+	r := require.New(t)
+
+	t.Run("signed float zero", func(t *testing.T) {
+		cache := MustNewSharded[float64, string](100)
+		negativeZero := math.Copysign(0, -1)
+
+		r.Equal(cache.hashKey(negativeZero), cache.hashKey(0))
+		cache.Set(negativeZero, "value")
+		value, found := cache.Get(0)
+		r.True(found)
+		r.Equal("value", value)
+	})
+
+	t.Run("named signed float zero", func(t *testing.T) {
+		cache := MustNewSharded[namedFloat64, string](100)
+		negativeZero := namedFloat64(math.Copysign(0, -1))
+
+		r.Equal(cache.hashKey(negativeZero), cache.hashKey(0))
+	})
+
+	t.Run("composite signed float zero", func(t *testing.T) {
+		type key struct {
+			value [2]float64
+		}
+
+		cache := MustNewSharded[key, string](100)
+		left := key{value: [2]float64{math.Copysign(0, -1), 0}}
+		right := key{value: [2]float64{0, math.Copysign(0, -1)}}
+
+		r.Equal(left, right)
+		r.Equal(cache.hashKey(left), cache.hashKey(right))
+	})
+
+	t.Run("mutable pointer", func(t *testing.T) {
+		cache := MustNewSharded[*mutableShardedKey, string](100)
+		key := &mutableShardedKey{value: "before"}
+		before := cache.hashKey(key)
+		cache.Set(key, "value")
+
+		key.value = "after"
+		r.Equal(before, cache.hashKey(key))
+		value, found := cache.Get(key)
+		r.True(found)
+		r.Equal("value", value)
+	})
 }
 
 func TestSharded_DifferentKeyTypes(t *testing.T) {

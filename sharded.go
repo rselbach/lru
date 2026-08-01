@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/maphash"
 	"math"
+	"reflect"
 	"sync"
 )
 
@@ -52,9 +53,9 @@ func MustNewSharded[K comparable, V any](capacity int) *Sharded[K, V] {
 // and number of shards. The capacity is distributed evenly across all shards.
 // Both capacity and shardCount must be greater than zero.
 //
-// Shard selection uses a fast path for strings, integers, floats, and bool.
-// Other comparable keys fall back to fmt formatting; prefer string or integer
-// keys on hot paths. Types with identical fmt output can share a shard.
+// Shard selection uses a fast path for built-in strings, integers, floats,
+// and bool. Other comparable keys are hashed recursively without invoking
+// String or Format methods. Equal keys are always assigned to the same shard.
 func NewShardedWithCount[K comparable, V any](capacity, shardCount int) (*Sharded[K, V], error) {
 	if capacity <= 0 {
 		return nil, errors.New("capacity must be greater than zero")
@@ -110,64 +111,145 @@ func (s *Sharded[K, V]) getShard(key K) *Cache[K, V] {
 
 // shardIndex returns the shard index for the given key.
 func (s *Sharded[K, V]) shardIndex(key K) int {
+	return int(s.hashKey(key) % uint64(len(s.shards)))
+}
+
+func (s *Sharded[K, V]) hashKey(key K) uint64 {
 	var h maphash.Hash
 	h.SetSeed(s.seed)
 
-	// fast path for common types using binary encoding (avoids fmt.Sprint allocations)
+	// fast path for common built-in types using binary encoding
 	var buf [8]byte
 	switch k := any(key).(type) {
 	case string:
 		h.WriteString(k)
 	case int:
-		binary.LittleEndian.PutUint64(buf[:], uint64(int64(k)))
-		h.Write(buf[:])
+		writeHashUint64(&h, &buf, uint64(int64(k)))
 	case int64:
-		binary.LittleEndian.PutUint64(buf[:], uint64(k))
-		h.Write(buf[:])
+		writeHashUint64(&h, &buf, uint64(k))
 	case int32:
-		binary.LittleEndian.PutUint64(buf[:], uint64(int64(k)))
-		h.Write(buf[:])
+		writeHashUint64(&h, &buf, uint64(int64(k)))
 	case int16:
-		binary.LittleEndian.PutUint64(buf[:], uint64(int64(k)))
-		h.Write(buf[:])
+		writeHashUint64(&h, &buf, uint64(int64(k)))
 	case int8:
-		binary.LittleEndian.PutUint64(buf[:], uint64(int64(k)))
-		h.Write(buf[:])
+		writeHashUint64(&h, &buf, uint64(int64(k)))
 	case uint:
-		binary.LittleEndian.PutUint64(buf[:], uint64(k))
-		h.Write(buf[:])
+		writeHashUint64(&h, &buf, uint64(k))
 	case uint64:
-		binary.LittleEndian.PutUint64(buf[:], k)
-		h.Write(buf[:])
+		writeHashUint64(&h, &buf, k)
 	case uint32:
-		binary.LittleEndian.PutUint64(buf[:], uint64(k))
-		h.Write(buf[:])
+		writeHashUint64(&h, &buf, uint64(k))
 	case uint16:
-		binary.LittleEndian.PutUint64(buf[:], uint64(k))
-		h.Write(buf[:])
+		writeHashUint64(&h, &buf, uint64(k))
 	case uint8:
-		binary.LittleEndian.PutUint64(buf[:], uint64(k))
-		h.Write(buf[:])
+		writeHashUint64(&h, &buf, uint64(k))
 	case uintptr:
-		binary.LittleEndian.PutUint64(buf[:], uint64(k))
-		h.Write(buf[:])
+		writeHashUint64(&h, &buf, uint64(k))
 	case float64:
-		binary.LittleEndian.PutUint64(buf[:], math.Float64bits(k))
-		h.Write(buf[:])
+		writeHashUint64(&h, &buf, normalizedFloat64Bits(k))
 	case float32:
-		binary.LittleEndian.PutUint64(buf[:], uint64(math.Float32bits(k)))
-		h.Write(buf[:])
+		writeHashUint64(&h, &buf, uint64(normalizedFloat32Bits(k)))
+	case complex128:
+		writeHashUint64(&h, &buf, normalizedFloat64Bits(real(k)))
+		writeHashUint64(&h, &buf, normalizedFloat64Bits(imag(k)))
+	case complex64:
+		writeHashUint64(&h, &buf, uint64(normalizedFloat32Bits(real(k))))
+		writeHashUint64(&h, &buf, uint64(normalizedFloat32Bits(imag(k))))
 	case bool:
 		if k {
 			buf[0] = 1
 		}
 		h.Write(buf[:1])
 	default:
-		// fallback for other comparable types; maphash never returns an error
-		_, _ = fmt.Fprint(&h, key)
+		writeComparableHash(&h, reflect.ValueOf(key), &buf)
 	}
 
-	return int(h.Sum64() % uint64(len(s.shards)))
+	return h.Sum64()
+}
+
+func writeHashUint64(h *maphash.Hash, buf *[8]byte, value uint64) {
+	binary.LittleEndian.PutUint64(buf[:], value)
+	h.Write(buf[:])
+}
+
+func normalizedFloat64Bits(value float64) uint64 {
+	if value == 0 {
+		return 0
+	}
+	return math.Float64bits(value)
+}
+
+func normalizedFloat32Bits(value float32) uint32 {
+	if value == 0 {
+		return 0
+	}
+	return math.Float32bits(value)
+}
+
+// writeComparableHash hashes values according to Go equality semantics without
+// invoking user-defined formatting methods. Collisions between unequal values
+// are harmless; equal values must always produce identical bytes.
+func writeComparableHash(h *maphash.Hash, value reflect.Value, buf *[8]byte) {
+	if !value.IsValid() {
+		buf[0] = 0
+		h.Write(buf[:1])
+		return
+	}
+
+	buf[0] = byte(value.Kind()) + 1
+	h.Write(buf[:1])
+
+	switch value.Kind() {
+	case reflect.Bool:
+		buf[0] = 0
+		if value.Bool() {
+			buf[0] = 1
+		}
+		h.Write(buf[:1])
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		writeHashUint64(h, buf, uint64(value.Int()))
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32,
+		reflect.Uint64, reflect.Uintptr:
+		writeHashUint64(h, buf, value.Uint())
+	case reflect.Float32:
+		writeHashUint64(h, buf, uint64(normalizedFloat32Bits(float32(value.Float()))))
+	case reflect.Float64:
+		writeHashUint64(h, buf, normalizedFloat64Bits(value.Float()))
+	case reflect.Complex64:
+		complexValue := complex64(value.Complex())
+		writeHashUint64(h, buf, uint64(normalizedFloat32Bits(real(complexValue))))
+		writeHashUint64(h, buf, uint64(normalizedFloat32Bits(imag(complexValue))))
+	case reflect.Complex128:
+		complexValue := value.Complex()
+		writeHashUint64(h, buf, normalizedFloat64Bits(real(complexValue)))
+		writeHashUint64(h, buf, normalizedFloat64Bits(imag(complexValue)))
+	case reflect.String:
+		writeHashUint64(h, buf, uint64(value.Len()))
+		h.WriteString(value.String())
+	case reflect.Array:
+		writeHashUint64(h, buf, uint64(value.Len()))
+		for i := 0; i < value.Len(); i++ {
+			writeComparableHash(h, value.Index(i), buf)
+		}
+	case reflect.Struct:
+		writeHashUint64(h, buf, uint64(value.NumField()))
+		for i := 0; i < value.NumField(); i++ {
+			if value.Type().Field(i).Name == "_" {
+				continue
+			}
+			writeComparableHash(h, value.Field(i), buf)
+		}
+	case reflect.Interface:
+		if value.IsNil() {
+			writeComparableHash(h, reflect.Value{}, buf)
+			return
+		}
+		writeComparableHash(h, value.Elem(), buf)
+	case reflect.Chan, reflect.Ptr, reflect.UnsafePointer:
+		writeHashUint64(h, buf, uint64(value.Pointer()))
+	default:
+		panic("lru: unsupported comparable key kind: " + value.Kind().String())
+	}
 }
 
 // Get retrieves a value from the cache by key.
