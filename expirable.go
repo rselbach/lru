@@ -737,10 +737,12 @@ func (c *Expirable[K, V]) SetTTL(ttl time.Duration) error {
 // Lazy expiration remains the default; the janitor only runs after this method is called.
 //
 // The interval must be greater than zero. Calling StartJanitor while the janitor
-// is already running is a no-op.
+// is already running is a no-op. If a previous janitor was signaled to stop but
+// has not exited yet, StartJanitor waits for that exit before starting a new one.
 //
-// The janitor goroutine runs until [Expirable.StopJanitor] is called;
-// abandoning the cache without stopping the janitor leaks the goroutine.
+// The janitor goroutine runs until [Expirable.StopJanitor] or
+// [Expirable.SignalStopJanitor] is called; abandoning the cache without
+// stopping the janitor leaks the goroutine.
 func (c *Expirable[K, V]) StartJanitor(interval time.Duration) error {
 	if interval <= 0 {
 		return errors.New("janitor interval must be greater than zero")
@@ -748,6 +750,17 @@ func (c *Expirable[K, V]) StartJanitor(interval time.Duration) error {
 
 	c.janitorMu.Lock()
 	defer c.janitorMu.Unlock()
+
+	// Wait out a previously signaled janitor before starting another.
+	for c.janitorStop == nil && c.janitorDone != nil {
+		done := c.janitorDone
+		c.janitorMu.Unlock()
+		<-done
+		c.janitorMu.Lock()
+		if c.janitorDone == done {
+			c.janitorDone = nil
+		}
+	}
 
 	if c.janitorStop != nil {
 		return nil
@@ -785,19 +798,49 @@ func (c *Expirable[K, V]) runJanitor(interval time.Duration, stop <-chan struct{
 //
 // Do not call StopJanitor from an eviction callback fired by the janitor
 // itself: StopJanitor waits for the janitor goroutine, which is blocked
-// invoking the callback, so the call would deadlock.
+// invoking the callback, so the call would deadlock. Use
+// [Expirable.SignalStopJanitor] from such callbacks instead.
 func (c *Expirable[K, V]) StopJanitor() {
 	c.janitorMu.Lock()
-	defer c.janitorMu.Unlock()
+	c.signalStopJanitorLocked()
+	done := c.janitorDone
+	c.janitorMu.Unlock()
 
+	if done == nil {
+		return
+	}
+	<-done
+
+	c.janitorMu.Lock()
+	if c.janitorDone == done {
+		c.janitorDone = nil
+	}
+	c.janitorMu.Unlock()
+}
+
+// SignalStopJanitor requests that the background expiry cleanup goroutine stop
+// if it is running. Unlike [Expirable.StopJanitor], it does not wait for the
+// goroutine to exit, so it is safe to call from an eviction callback invoked by
+// the janitor. Calling SignalStopJanitor when the janitor is not running is a
+// no-op.
+//
+// [Expirable.StopJanitor] may still be used afterward to wait for exit.
+// [Expirable.StartJanitor] waits for any previously signaled janitor before
+// starting a new one.
+func (c *Expirable[K, V]) SignalStopJanitor() {
+	c.janitorMu.Lock()
+	defer c.janitorMu.Unlock()
+	c.signalStopJanitorLocked()
+}
+
+// signalStopJanitorLocked closes the stop channel if the janitor is running.
+// Caller must hold janitorMu. janitorDone remains set until a waiter observes exit.
+func (c *Expirable[K, V]) signalStopJanitorLocked() {
 	if c.janitorStop == nil {
 		return
 	}
-
 	close(c.janitorStop)
-	<-c.janitorDone
 	c.janitorStop = nil
-	c.janitorDone = nil
 }
 
 // OnEvict sets a callback function that will be called when an entry is evicted from the cache.

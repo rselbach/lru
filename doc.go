@@ -64,7 +64,8 @@
 //
 // When a write needs capacity, expired entries are purged before evicting a
 // non-expired LRU entry. Applications that want periodic background cleanup can
-// opt in with [Expirable.StartJanitor] and stop it with [Expirable.StopJanitor].
+// opt in with [Expirable.StartJanitor] and stop it with [Expirable.StopJanitor]
+// (or [Expirable.SignalStopJanitor] from a janitor-driven eviction callback).
 //
 // # Sharded Cache
 //

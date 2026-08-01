@@ -475,6 +475,47 @@ func TestExpirable_JanitorLifecycle(t *testing.T) {
 
 	r.NoError(cache.StartJanitor(5 * time.Millisecond))
 	cache.StopJanitor()
+
+	r.NoError(cache.StartJanitor(5 * time.Millisecond))
+	cache.SignalStopJanitor()
+	cache.StopJanitor() // wait for the signaled stop to finish
+	r.NoError(cache.StartJanitor(5 * time.Millisecond))
+	cache.StopJanitor()
+}
+
+func TestExpirable_SignalStopJanitorFromOnEvict(t *testing.T) {
+	r := require.New(t)
+	cache := MustNewExpirable[string, int](5, time.Minute)
+
+	stopped := make(chan struct{}, 1)
+	cache.OnEvict(func(string, int) {
+		cache.SignalStopJanitor()
+		select {
+		case stopped <- struct{}{}:
+		default:
+		}
+	})
+
+	cache.Set("a", 1, WithTTL(5*time.Millisecond))
+	r.NoError(cache.StartJanitor(2 * time.Millisecond))
+
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("OnEvict did not run")
+	}
+
+	// StopJanitor must still be safe after a signal and must not hang.
+	done := make(chan struct{})
+	go func() {
+		cache.StopJanitor()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("StopJanitor hung after SignalStopJanitor from OnEvict")
+	}
 }
 
 func TestExpirable_JanitorRemovesExpired(t *testing.T) {
@@ -573,19 +614,13 @@ func waitForExpirablePhysicalLen[K comparable, V any](t *testing.T, cache *Expir
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		cache.mu.RLock()
-		got := len(cache.items)
-		cache.mu.RUnlock()
-		if got == want {
+		if cache.PhysicalLen() == want {
 			return
 		}
 		time.Sleep(time.Millisecond)
 	}
 
-	cache.mu.RLock()
-	got := len(cache.items)
-	cache.mu.RUnlock()
-	t.Fatalf("physical len: got %d, want %d", got, want)
+	t.Fatalf("physical len: got %d, want %d", cache.PhysicalLen(), want)
 }
 
 func TestExpirable_SetTTL(t *testing.T) {
