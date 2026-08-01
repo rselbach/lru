@@ -1,4 +1,4 @@
-module github.com/rselbach/lru
+module github.com/rselbach/lru/v2
 
 go 1.18
 

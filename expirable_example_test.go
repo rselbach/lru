@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rselbach/lru"
+	"github.com/rselbach/lru/v2"
 )
 
 // This example demonstrates basic usage of the Expirable cache with time-to-live functionality.

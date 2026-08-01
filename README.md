@@ -1,6 +1,6 @@
 # Generic LRU Cache for Go
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/rselbach/lru.svg)](https://pkg.go.dev/github.com/rselbach/lru)
+[![Go Reference](https://pkg.go.dev/badge/github.com/rselbach/lru/v2.svg)](https://pkg.go.dev/github.com/rselbach/lru/v2)
 
 A thread-safe, generic LRU cache implementation in Go with optional TTL
 expiration, sharding, and eviction callbacks.
@@ -33,7 +33,7 @@ when a read should neither change recency nor serialize with other readers.
 ## Installation
 
 ```shell
-go get github.com/rselbach/lru
+go get github.com/rselbach/lru/v2
 ```
 
 ## Quick Start
@@ -76,7 +76,7 @@ cache := lru.MustNewSharded[string, int](10_000)
 cache.Set("key", 42)
 ```
 
-See the [package documentation](https://pkg.go.dev/github.com/rselbach/lru)
+See the [package documentation](https://pkg.go.dev/github.com/rselbach/lru/v2)
 for complete API reference, eviction-callback rules, and expiry semantics.
 
 ## License

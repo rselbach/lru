@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/rselbach/lru"
+	"github.com/rselbach/lru/v2"
 )
 
 // This example demonstrates basic usage of the LRU cache.
