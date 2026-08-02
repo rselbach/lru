@@ -63,8 +63,9 @@ func MustNewSharded[K comparable, V any](capacity int) *Sharded[K, V] {
 // exceed capacity.
 //
 // Shard selection uses a fast path for built-in strings, integers, floats,
-// and bool. Other comparable keys are hashed recursively without invoking
-// String or Format methods. Equal keys are always assigned to the same shard.
+// complex numbers, and bool. Other comparable keys are hashed recursively
+// without invoking String or Format methods. Equal keys are always assigned to
+// the same shard.
 func NewShardedWithCount[K comparable, V any](capacity, shardCount int) (*Sharded[K, V], error) {
 	if capacity <= 0 {
 		return nil, ErrInvalidCapacity
