@@ -10,6 +10,11 @@ import (
 )
 
 // DefaultShardCount is the default number of shards for a Sharded cache.
+//
+// It suits moderate concurrency. Throughput keeps improving with more shards
+// well past this value on machines with many cores, so use
+// [NewShardedWithCount] to raise it when many goroutines share one cache and
+// the capacity allows each shard a useful number of entries.
 const DefaultShardCount = 16
 
 // Sharded represents a thread-safe, sharded LRU cache.
@@ -21,6 +26,12 @@ const DefaultShardCount = 16
 // shard, so a hot shard can evict entries while another shard has spare room.
 // Methods that return collections process shards in order and do not preserve
 // global recency across shards.
+//
+// Sharding pays off only when concurrent keys spread across shards. Traffic
+// concentrated on a single key reaches one shard, leaving the hashing as pure
+// overhead on top of the same contention an unsharded [Cache] would see, and a
+// single-goroutine workload pays that overhead with no contention to offset
+// it.
 //
 // A Sharded must be created with [NewSharded], [MustNewSharded], [NewShardedWithCount],
 // or [MustNewShardedWithCount]; the zero value is not ready for use. A Sharded

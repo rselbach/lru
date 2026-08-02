@@ -39,8 +39,19 @@ The v1 API remains available at `github.com/rselbach/lru`.
 | Oldest-entry helpers | Yes | Yes | No |
 | `Len` complexity | O(1) | O(n), live entries only | O(shards) |
 
-`Get` updates recency and therefore takes an exclusive cache lock. Use `Peek`
-when a read should neither change recency nor serialize with other readers.
+`Get` updates recency and therefore takes an exclusive cache lock, so
+concurrent `Get` calls serialize on every cache type. Use `Peek` when a read
+should neither change recency nor serialize with other readers; `Peek` on a
+`Sharded` cache is the only combination whose throughput rises as cores are
+added.
+
+`Sharded` helps only when concurrent keys spread across shards. One dominant
+key routes every operation to the same shard, where hashing is pure overhead,
+and a single-goroutine workload pays that overhead with no contention to offset
+it. `DefaultShardCount` (16) suits moderate concurrency; on many-core machines
+throughput keeps improving well past it, so use `NewShardedWithCount` when many
+goroutines share one cache and the capacity leaves each shard a useful number
+of entries.
 
 ## Installation
 

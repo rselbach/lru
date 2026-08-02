@@ -91,6 +91,28 @@
 // complex numbers, and bool. Other comparable keys are hashed recursively
 // according to Go equality semantics without invoking user-defined formatting.
 //
+// Sharding only helps when concurrent keys spread across shards. A workload
+// dominated by one key sends every operation to the same shard, where the
+// hashing is pure overhead and throughput falls below an unsharded [Cache].
+// Sharding also costs on a single goroutine, since there is no contention to
+// offset the hashing; it starts to pay from roughly two concurrent callers.
+//
+// [DefaultShardCount] suits moderate concurrency. Throughput keeps improving
+// with more shards well past it on machines with many cores, so consider
+// [NewShardedWithCount] with a higher count when many goroutines share one
+// cache. Shards divide the total capacity, so keep enough capacity per shard
+// for the working set; very small shards evict entries a global LRU would
+// have kept.
+//
+// # Concurrency
+//
+// Get updates recency, so it takes the cache's exclusive lock on every cache
+// type and concurrent Get calls serialize against each other. [Cache.Peek],
+// [Expirable.Peek], and [Sharded.Peek] take a read lock instead, at the cost
+// of not refreshing recency. Reads that do not need recency updates therefore
+// scale considerably better, and combining Peek with [Sharded] is the only
+// arrangement whose throughput rises with additional cores.
+//
 // # Eviction Callbacks
 //
 // Register a callback to be notified when entries are evicted:
