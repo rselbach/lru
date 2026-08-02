@@ -118,7 +118,7 @@ func TestCache_SkipsValidationForAlwaysValidKeys(t *testing.T) {
 	r.Equal(1, value)
 
 	sharded := MustNewSharded[key, int](2)
-	r.True(sharded.skipKeyCheck)
+	r.True(sharded.hasher.skipKeyCheck)
 	sharded.Set(troy, 2)
 	value, found = sharded.Get(troy)
 	r.True(found)
@@ -133,7 +133,7 @@ func TestCache_SkipsValidationForAlwaysValidKeys(t *testing.T) {
 
 	// Float components can be NaN, so those keys must still be validated.
 	r.False(MustNew[float64, int](2).skipKeyCheck)
-	r.False(MustNewSharded[float64, int](2).skipKeyCheck)
+	r.False(MustNewSharded[float64, int](2).hasher.skipKeyCheck)
 	r.False(MustNewExpirable[float64, int](2, time.Minute).skipKeyCheck)
 }
 

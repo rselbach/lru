@@ -508,7 +508,7 @@ func TestSharded_EqualKeysHashIdentically(t *testing.T) {
 		cache := MustNewSharded[float64, string](100)
 		negativeZero := math.Copysign(0, -1)
 
-		r.Equal(cache.hashKey(negativeZero), cache.hashKey(0))
+		r.Equal(cache.hasher.hash(negativeZero), cache.hasher.hash(0))
 		cache.Set(negativeZero, "value")
 		value, found := cache.Get(0)
 		r.True(found)
@@ -519,7 +519,7 @@ func TestSharded_EqualKeysHashIdentically(t *testing.T) {
 		cache := MustNewSharded[float32, string](100)
 		negativeZero := float32(math.Copysign(0, -1))
 
-		r.Equal(cache.hashKey(negativeZero), cache.hashKey(0))
+		r.Equal(cache.hasher.hash(negativeZero), cache.hasher.hash(0))
 		cache.Set(negativeZero, "value")
 		value, found := cache.Get(0)
 		r.True(found)
@@ -530,7 +530,7 @@ func TestSharded_EqualKeysHashIdentically(t *testing.T) {
 		cache := MustNewSharded[namedFloat64, string](100)
 		negativeZero := namedFloat64(math.Copysign(0, -1))
 
-		r.Equal(cache.hashKey(negativeZero), cache.hashKey(0))
+		r.Equal(cache.hasher.hash(negativeZero), cache.hasher.hash(0))
 	})
 
 	t.Run("composite signed float zero", func(t *testing.T) {
@@ -543,7 +543,7 @@ func TestSharded_EqualKeysHashIdentically(t *testing.T) {
 		right := key{value: [2]float64{0, math.Copysign(0, -1)}}
 
 		r.Equal(left, right)
-		r.Equal(cache.hashKey(left), cache.hashKey(right))
+		r.Equal(cache.hasher.hash(left), cache.hasher.hash(right))
 	})
 
 	t.Run("composite signed float32 zero", func(t *testing.T) {
@@ -556,7 +556,7 @@ func TestSharded_EqualKeysHashIdentically(t *testing.T) {
 		right := key{value: 0}
 
 		r.Equal(left, right)
-		r.Equal(cache.hashKey(left), cache.hashKey(right))
+		r.Equal(cache.hasher.hash(left), cache.hasher.hash(right))
 	})
 
 	t.Run("complex signed zero", func(t *testing.T) {
@@ -565,7 +565,7 @@ func TestSharded_EqualKeysHashIdentically(t *testing.T) {
 		right := complex(0, 0)
 
 		r.Equal(left, right)
-		r.Equal(cache.hashKey(left), cache.hashKey(right))
+		r.Equal(cache.hasher.hash(left), cache.hasher.hash(right))
 	})
 
 	t.Run("complex64 signed zero", func(t *testing.T) {
@@ -574,7 +574,7 @@ func TestSharded_EqualKeysHashIdentically(t *testing.T) {
 		var right complex64
 
 		r.Equal(left, right)
-		r.Equal(cache.hashKey(left), cache.hashKey(right))
+		r.Equal(cache.hasher.hash(left), cache.hasher.hash(right))
 	})
 
 	t.Run("array key", func(t *testing.T) {
@@ -582,7 +582,7 @@ func TestSharded_EqualKeysHashIdentically(t *testing.T) {
 		left := [2]string{"a", "b"}
 		right := [2]string{"a", "b"}
 
-		r.Equal(cache.hashKey(left), cache.hashKey(right))
+		r.Equal(cache.hasher.hash(left), cache.hasher.hash(right))
 		cache.Set(left, 1)
 		value, found := cache.Get(right)
 		r.True(found)
@@ -600,12 +600,12 @@ func TestSharded_EqualKeysHashIdentically(t *testing.T) {
 		right := key{visible: "same"}
 		// blank fields are ignored by Go equality; hashing must match
 		r.Equal(left, right)
-		r.Equal(cache.hashKey(left), cache.hashKey(right))
+		r.Equal(cache.hasher.hash(left), cache.hasher.hash(right))
 	})
 
 	t.Run("bool key", func(t *testing.T) {
 		cache := MustNewSharded[bool, string](100)
-		r.NotEqual(cache.hashKey(true), cache.hashKey(false))
+		r.NotEqual(cache.hasher.hash(true), cache.hasher.hash(false))
 		cache.Set(true, "yes")
 		cache.Set(false, "no")
 		yes, found := cache.Get(true)
@@ -616,11 +616,11 @@ func TestSharded_EqualKeysHashIdentically(t *testing.T) {
 	t.Run("mutable pointer", func(t *testing.T) {
 		cache := MustNewSharded[*mutableShardedKey, string](100)
 		key := &mutableShardedKey{value: "before"}
-		before := cache.hashKey(key)
+		before := cache.hasher.hash(key)
 		cache.Set(key, "value")
 
 		key.value = "after"
-		r.Equal(before, cache.hashKey(key))
+		r.Equal(before, cache.hasher.hash(key))
 		value, found := cache.Get(key)
 		r.True(found)
 		r.Equal("value", value)
@@ -634,7 +634,7 @@ func requireEvenShardSpread[K comparable](t *testing.T, cache *Sharded[K, int], 
 
 	counts := make([]int, cache.ShardCount())
 	for _, key := range keys {
-		counts[cache.shardIndex(key)]++
+		counts[cache.hasher.index(key, cache.ShardCount())]++
 	}
 
 	mean := float64(len(keys)) / float64(len(counts))
@@ -707,8 +707,8 @@ func TestSharded_ScalarSeedVariesPerCache(t *testing.T) {
 	first := MustNewSharded[int, int](64)
 	second := MustNewSharded[int, int](64)
 
-	r.NotZero(first.scalarSeed, "scalar seed must be derived from the maphash seed")
-	r.NotEqual(first.scalarSeed, second.scalarSeed,
+	r.NotZero(first.hasher.scalarSeed, "scalar seed must be derived from the maphash seed")
+	r.NotEqual(first.hasher.scalarSeed, second.hasher.scalarSeed,
 		"scalar hashing must stay seeded per cache so shard assignment is not predictable")
 }
 
@@ -1247,7 +1247,7 @@ func shardedShardCapacities[K comparable, V any](cache *Sharded[K, V]) []int {
 func keysForShard[V any](cache *Sharded[int, V], shardIdx, count int) []int {
 	keys := make([]int, 0, count)
 	for key := 0; len(keys) < count; key++ {
-		if cache.shardIndex(key) == shardIdx {
+		if cache.hasher.index(key, cache.ShardCount()) == shardIdx {
 			keys = append(keys, key)
 		}
 	}
