@@ -37,10 +37,12 @@ const DefaultShardCount = 16
 // or [MustNewShardedWithCount]; the zero value is not ready for use. A Sharded
 // must not be copied after first use.
 type Sharded[K comparable, V any] struct {
-	shards   []*Cache[K, V]
-	seed     maphash.Seed
-	mu       sync.RWMutex // protects capacity updates and serializes Resize
-	capacity int          // total capacity across all shards
+	shards []*Cache[K, V]
+	seed   maphash.Seed
+	// scalarSeed is derived from seed and used by the scalar hashing fast path.
+	scalarSeed uint64
+	mu         sync.RWMutex // protects capacity updates and serializes Resize
+	capacity   int          // total capacity across all shards
 	// skipKeyCheck is set when K can never produce an invalid key. The zero
 	// value validates, so an uninitialized cache stays safe.
 	skipKeyCheck bool
@@ -105,9 +107,12 @@ func NewShardedWithCount[K comparable, V any](capacity, shardCount int) (*Sharde
 		shards[i] = shard
 	}
 
+	seed := maphash.MakeSeed()
+
 	return &Sharded[K, V]{
 		shards:       shards,
-		seed:         maphash.MakeSeed(),
+		seed:         seed,
+		scalarSeed:   scalarSeed(seed),
 		capacity:     capacity,
 		skipKeyCheck: !keysNeedValidation[K](),
 	}, nil
@@ -140,55 +145,84 @@ func (s *Sharded[K, V]) shardIndex(key K) int {
 }
 
 func (s *Sharded[K, V]) hashKey(key K) uint64 {
-	var h maphash.Hash
-	h.SetSeed(s.seed)
-
-	// fast path for common built-in types using binary encoding
-	var buf [8]byte
+	// Fast path: scalar keys already fit in one or two machine words, so they
+	// are mixed directly rather than routed through maphash setup, a buffered
+	// write and finalization.
 	switch k := any(key).(type) {
-	case string:
-		h.WriteString(k)
 	case int:
-		writeHashUint64(&h, &buf, uint64(int64(k)))
+		return mixScalar(s.scalarSeed, uint64(int64(k)))
 	case int64:
-		writeHashUint64(&h, &buf, uint64(k))
+		return mixScalar(s.scalarSeed, uint64(k))
 	case int32:
-		writeHashUint64(&h, &buf, uint64(int64(k)))
+		return mixScalar(s.scalarSeed, uint64(int64(k)))
 	case int16:
-		writeHashUint64(&h, &buf, uint64(int64(k)))
+		return mixScalar(s.scalarSeed, uint64(int64(k)))
 	case int8:
-		writeHashUint64(&h, &buf, uint64(int64(k)))
+		return mixScalar(s.scalarSeed, uint64(int64(k)))
 	case uint:
-		writeHashUint64(&h, &buf, uint64(k))
+		return mixScalar(s.scalarSeed, uint64(k))
 	case uint64:
-		writeHashUint64(&h, &buf, k)
+		return mixScalar(s.scalarSeed, k)
 	case uint32:
-		writeHashUint64(&h, &buf, uint64(k))
+		return mixScalar(s.scalarSeed, uint64(k))
 	case uint16:
-		writeHashUint64(&h, &buf, uint64(k))
+		return mixScalar(s.scalarSeed, uint64(k))
 	case uint8:
-		writeHashUint64(&h, &buf, uint64(k))
+		return mixScalar(s.scalarSeed, uint64(k))
 	case uintptr:
-		writeHashUint64(&h, &buf, uint64(k))
+		return mixScalar(s.scalarSeed, uint64(k))
 	case float64:
-		writeHashUint64(&h, &buf, normalizedFloat64Bits(k))
+		return mixScalar(s.scalarSeed, normalizedFloat64Bits(k))
 	case float32:
-		writeHashUint64(&h, &buf, uint64(normalizedFloat32Bits(k)))
+		return mixScalar(s.scalarSeed, uint64(normalizedFloat32Bits(k)))
 	case complex128:
-		writeHashUint64(&h, &buf, normalizedFloat64Bits(real(k)))
-		writeHashUint64(&h, &buf, normalizedFloat64Bits(imag(k)))
+		return mixScalar(
+			mixScalar(s.scalarSeed, normalizedFloat64Bits(real(k))),
+			normalizedFloat64Bits(imag(k)),
+		)
 	case complex64:
-		writeHashUint64(&h, &buf, uint64(normalizedFloat32Bits(real(k))))
-		writeHashUint64(&h, &buf, uint64(normalizedFloat32Bits(imag(k))))
+		return mixScalar(
+			mixScalar(s.scalarSeed, uint64(normalizedFloat32Bits(real(k)))),
+			uint64(normalizedFloat32Bits(imag(k))),
+		)
 	case bool:
 		if k {
-			buf[0] = 1
+			return mixScalar(s.scalarSeed, 1)
 		}
-		h.Write(buf[:1])
-	default:
-		writeComparableHash(&h, reflect.ValueOf(key), &buf)
+		return mixScalar(s.scalarSeed, 0)
+	case string:
+		var h maphash.Hash
+		h.SetSeed(s.seed)
+		h.WriteString(k)
+		return h.Sum64()
 	}
 
+	var h maphash.Hash
+	h.SetSeed(s.seed)
+	var buf [8]byte
+	writeComparableHash(&h, reflect.ValueOf(key), &buf)
+	return h.Sum64()
+}
+
+// mixScalar hashes one machine word with the murmur3 finalizer. Equal words
+// always produce the same result, which is all shard selection requires.
+func mixScalar(seed, value uint64) uint64 {
+	value ^= seed
+	value ^= value >> 33
+	value *= 0xff51afd7ed558ccd
+	value ^= value >> 33
+	value *= 0xc4ceb9fe1a85ec53
+	value ^= value >> 33
+	return value
+}
+
+// scalarSeed derives the scalar mixing seed from the cache's random maphash
+// seed, so scalar keys are spread as unpredictably across processes as the
+// keys that still go through maphash.
+func scalarSeed(seed maphash.Seed) uint64 {
+	var h maphash.Hash
+	h.SetSeed(seed)
+	h.WriteString("lru: scalar shard seed")
 	return h.Sum64()
 }
 

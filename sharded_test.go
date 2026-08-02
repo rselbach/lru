@@ -627,6 +627,91 @@ func TestSharded_EqualKeysHashIdentically(t *testing.T) {
 	})
 }
 
+// requireEvenShardSpread fails when any shard draws wildly more or less than
+// its share of the keys, which is what a weak hash looks like from outside.
+func requireEvenShardSpread[K comparable](t *testing.T, cache *Sharded[K, int], keys []K) {
+	t.Helper()
+
+	counts := make([]int, cache.ShardCount())
+	for _, key := range keys {
+		counts[cache.shardIndex(key)]++
+	}
+
+	mean := float64(len(keys)) / float64(len(counts))
+	for shard, count := range counts {
+		require.Greater(t, float64(count), mean/2,
+			"shard %d drew %d of %d keys", shard, count, len(keys))
+		require.Less(t, float64(count), mean*2,
+			"shard %d drew %d of %d keys", shard, count, len(keys))
+	}
+}
+
+// Sequential keys are the adversarial input for the scalar hashing fast path:
+// their bit patterns differ in only the low bits, so a weak mix piles them into
+// a handful of shards.
+func TestSharded_KeysSpreadAcrossShards(t *testing.T) {
+	const (
+		shardCount = 16
+		keyCount   = 16000
+	)
+
+	t.Run("int", func(t *testing.T) {
+		keys := make([]int, keyCount)
+		for i := range keys {
+			keys[i] = i
+		}
+		requireEvenShardSpread(t, MustNewShardedWithCount[int, int](keyCount, shardCount), keys)
+	})
+
+	t.Run("uint32", func(t *testing.T) {
+		keys := make([]uint32, keyCount)
+		for i := range keys {
+			keys[i] = uint32(i)
+		}
+		requireEvenShardSpread(t, MustNewShardedWithCount[uint32, int](keyCount, shardCount), keys)
+	})
+
+	t.Run("float64", func(t *testing.T) {
+		keys := make([]float64, keyCount)
+		for i := range keys {
+			keys[i] = float64(i)
+		}
+		requireEvenShardSpread(t, MustNewShardedWithCount[float64, int](keyCount, shardCount), keys)
+	})
+
+	t.Run("string", func(t *testing.T) {
+		keys := make([]string, keyCount)
+		for i := range keys {
+			keys[i] = fmt.Sprintf("greendale-%d", i)
+		}
+		requireEvenShardSpread(t, MustNewShardedWithCount[string, int](keyCount, shardCount), keys)
+	})
+
+	t.Run("struct", func(t *testing.T) {
+		type key struct {
+			region string
+			id     int
+		}
+
+		keys := make([]key, keyCount)
+		for i := range keys {
+			keys[i] = key{region: "greendale", id: i}
+		}
+		requireEvenShardSpread(t, MustNewShardedWithCount[key, int](keyCount, shardCount), keys)
+	})
+}
+
+func TestSharded_ScalarSeedVariesPerCache(t *testing.T) {
+	r := require.New(t)
+
+	first := MustNewSharded[int, int](64)
+	second := MustNewSharded[int, int](64)
+
+	r.NotZero(first.scalarSeed, "scalar seed must be derived from the maphash seed")
+	r.NotEqual(first.scalarSeed, second.scalarSeed,
+		"scalar hashing must stay seeded per cache so shard assignment is not predictable")
+}
+
 func TestSharded_DifferentKeyTypes(t *testing.T) {
 	t.Run("string keys", func(t *testing.T) {
 		r := require.New(t)
