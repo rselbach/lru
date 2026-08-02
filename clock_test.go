@@ -332,6 +332,21 @@ func TestClock_Resize(t *testing.T) {
 		}
 	})
 
+	t.Run("shrink counts without a callback", func(t *testing.T) {
+		cache := MustNewClockWithCount[int, int](64, 4)
+		for i := 0; i < 64; i++ {
+			cache.Set(i, i)
+		}
+		before := cache.Len()
+
+		// No OnEvict registered: the returned count must still be the number
+		// of entries evicted, not the number collected for callbacks.
+		evicted, err := cache.Resize(16)
+		r.NoError(err)
+		r.Equal(before-cache.Len(), evicted)
+		r.Positive(evicted)
+	})
+
 	t.Run("grow keeps entries", func(t *testing.T) {
 		cache := MustNewClockWithCount[int, int](16, 4)
 		for i := 0; i < 16; i++ {

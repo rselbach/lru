@@ -531,10 +531,10 @@ func (c *Clock[K, V]) Resize(capacity int) (int, error) {
 
 		s.mu.Lock()
 		onEvict := s.onEvict
-		removed := s.resizeLocked(shardCap, onEvict != nil)
+		removed, count := s.resizeLocked(shardCap, onEvict != nil)
 		s.mu.Unlock()
 
-		evicted += len(removed)
+		evicted += count
 		if onEvict != nil {
 			for _, e := range removed {
 				evictions = append(evictions, shardedEviction[K, V]{
@@ -556,10 +556,13 @@ func (c *Clock[K, V]) Resize(capacity int) (int, error) {
 	return evicted, nil
 }
 
-// resizeLocked shrinks the shard to capacity and compacts its ring.
+// resizeLocked shrinks the shard to capacity and compacts its ring. It returns
+// the entries collected for the eviction callback and the eviction count, which
+// is tracked separately so the count stays right when no callback is set.
 // Caller must hold s.mu.
-func (s *clockShard[K, V]) resizeLocked(capacity int, collect bool) []evictedItem[K, V] {
+func (s *clockShard[K, V]) resizeLocked(capacity int, collect bool) ([]evictedItem[K, V], int) {
 	var evicted []evictedItem[K, V]
+	count := 0
 
 	for len(s.items) > capacity {
 		victim := s.ring[s.hand]
@@ -578,6 +581,7 @@ func (s *clockShard[K, V]) resizeLocked(capacity int, collect bool) []evictedIte
 			evicted = append(evicted, evictedItem[K, V]{key: victim.key, val: victim.val})
 		}
 		s.removeLocked(victim)
+		count++
 	}
 
 	// Compact the survivors so the ring never exceeds the new capacity and the
@@ -593,7 +597,7 @@ func (s *clockShard[K, V]) resizeLocked(capacity int, collect bool) []evictedIte
 	s.free = s.free[:0]
 	s.hand = 0
 	s.capacity = capacity
-	return evicted
+	return evicted, count
 }
 
 // OnEvict sets a callback invoked when an entry leaves the cache, receiving its
