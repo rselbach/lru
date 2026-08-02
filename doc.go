@@ -1,11 +1,12 @@
 // Package lru provides generic, thread-safe LRU cache implementations.
 //
-// Four cache types are provided:
+// Five cache types are provided:
 //
 //   - [Cache]: A standard LRU cache with fixed capacity
 //   - [Expirable]: An LRU cache with per-entry TTL expiration
 //   - [Sharded]: A sharded LRU cache for reduced lock contention under high concurrency
 //   - [Clock]: A sharded cache that approximates LRU so reads scale with cores
+//   - [TinyLFU]: A W-TinyLFU admission cache that resists scans and loops
 //
 // All are safe for concurrent use and support eviction callbacks.
 //
@@ -119,6 +120,41 @@
 // strictly the least recently used one. Choose [Cache] when order matters and
 // Clock when read throughput does.
 //
+// # TinyLFU Cache
+//
+// A [TinyLFU] cache puts an admission policy in front of a segmented LRU. New
+// entries pass through a small window; when the window overflows, the candidate
+// is admitted to the main area only if a compact frequency sketch ranks it
+// above the entry it would displace. One-shot keys therefore cannot flush the
+// working set, which lifts hit rates on skewed traffic and makes the cache
+// resistant to the scans and loops that degrade LRU-family policies, including
+// [Clock]. Reads take only a read lock and record accesses into a small lossy
+// per-shard buffer that later writes apply, so read throughput scales with
+// cores and reads never invoke eviction callbacks.
+//
+// Because admission may reject the newest key, an entry just written to a full
+// cache can be evicted before it is ever read; this is the admission policy
+// working, not a bug. Code that stores a value and relies on reading that same
+// key back immediately should use a cache type without an admission policy.
+//
+// # Choosing a Cache Type
+//
+// [Cache], [Expirable], and [Sharded] provide exact semantics: precise LRU
+// order, oldest-entry accessors, and TTL expiration on Expirable. Choose them
+// when those semantics matter more than multi-core read throughput.
+//
+// [Clock] and [TinyLFU] trade exact ordering for reads that scale with cores.
+// Between them, Clock optimizes what a hit costs and TinyLFU optimizes how
+// often you hit: a TinyLFU read pays a few extra nanoseconds of bookkeeping,
+// and in exchange the admission policy typically recovers several points of
+// hit rate on skewed or scan-heavy traffic. One point of hit rate saves one
+// hundredth of the miss cost per request, so whenever a miss costs more than
+// about a microsecond, as any database query, RPC, or disk read does, TinyLFU
+// is the better default. Prefer Clock when misses are nearly free, when the
+// working set fits in capacity so no policy can add hit rate, when traffic
+// concentrates on a single hot key, or when a stored entry must never be
+// evicted by admission rather than by pressure.
+//
 // # Concurrency
 //
 // Get updates recency, so on [Cache], [Expirable], and [Sharded] it takes the
@@ -127,9 +163,11 @@
 // at the cost of not refreshing recency, so reads that do not need recency
 // updates scale considerably better.
 //
-// [Clock.Get] takes only a read lock because it has no order to maintain, which
-// is why a Clock cache is the one type whose read throughput rises rather than
-// falls as cores are added.
+// [Clock.Get] and [TinyLFU.Get] take only a read lock because neither maintains
+// an exact order, which is why those two types' read throughput rises rather
+// than falls as cores are added. Clock's reads are the cheaper of the two;
+// TinyLFU spends the difference on the frequency bookkeeping its admission
+// policy needs.
 //
 // # Eviction Callbacks
 //
@@ -141,24 +179,26 @@
 //
 // When OnEvict runs:
 //
-//   - Capacity eviction: Cache, Expirable, Sharded, and Clock
-//   - [Cache.Remove] / [Expirable.Remove] / [Sharded.Remove] / [Clock.Remove]:
-//     yes (Expirable includes already-expired entries still present in storage)
+//   - Capacity eviction: every cache type; for [TinyLFU] this includes a
+//     candidate rejected by the admission test
+//   - Remove on every cache type: yes (Expirable includes already-expired
+//     entries still present in storage)
 //   - [Cache.RemoveOldest] / [Expirable.RemoveOldest]: yes
-//   - [Cache.Clear] / [Expirable.Clear] / [Clock.Clear]: every stored entry,
-//     least- to most-recently used for the LRU types, unspecified order for
-//     Clock, including unpurged expired entries for Expirable
+//   - Clear on every cache type: every stored entry, least- to most-recently
+//     used for the LRU types, unspecified order for Clock and TinyLFU,
+//     including unpurged expired entries for Expirable
 //   - [Expirable.RemoveExpired], janitor, and capacity expiry cleanup: yes
 //   - [Expirable.Set] replacing an already-expired entry: yes for the old value
-//   - [Cache.Set] / [Expirable.Set] / [Sharded.Set] / [Clock.Set] replacing a
-//     live entry: no; the previous value is discarded without a callback
-//   - [Cache.Resize] / [Expirable.Resize] / [Sharded.Resize] / [Clock.Resize]:
-//     yes for live evictions (Expirable also reports expired entries purged
-//     during resize)
+//   - Set replacing a live entry: no; the previous value is discarded without
+//     a callback
+//   - Resize on every cache type: yes for live evictions (Expirable also
+//     reports expired entries purged during resize)
 //
 // Resize and Clear report evicted entries in order from least recently used to
 // most recently used within the cache (or within each shard for [Sharded]);
-// [Clock] keeps no such order and reports them in an unspecified one.
+// [Clock] and [TinyLFU] keep no such order and report them in an unspecified
+// one. [TinyLFU] reads never invoke the callback at all: its buffered access
+// records are applied by writes, and applying them never evicts.
 // They collect the entries to report while holding the cache lock so the
 // callbacks can run without it, which costs one buffered key/value pair per
 // evicted entry; clearing a large cache with a callback set allocates in

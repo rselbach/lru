@@ -26,30 +26,42 @@ The v1 API remains available at `github.com/rselbach/lru`.
 - Optional time-based expiration (`Expirable`)
 - Sharded cache for reduced lock contention (`Sharded`)
 - Approximate-LRU cache whose reads scale with cores (`Clock`)
+- W-TinyLFU admission cache that resists scans and loops (`TinyLFU`)
 - `GetOrSet` / `GetOrSetSingleflight` memoization
 - Eviction callbacks and `Resize` on every cache type
 - Oldest-entry helpers on non-sharded caches
 
 ## Cache Types
 
-| Capability | `Cache` | `Expirable` | `Sharded` | `Clock` |
-| --- | --- | --- | --- | --- |
-| Eviction policy | Exact LRU | Exact LRU + TTL | Exact LRU per shard | Approximate (CLOCK) |
-| LRU scope | Global | Global | Per shard | Per shard |
-| TTL expiration | No | Yes | No | No |
-| `Resize` / callbacks | Yes | Yes | Yes, per shard | Yes, per shard |
-| Oldest-entry helpers | Yes | Yes | No | No |
-| `Keys` / `Values` order | MRU to LRU | MRU to LRU | Per shard | Unspecified |
-| Reads scale with cores | No | No | No | Yes |
-| `Len` complexity | O(1) | O(n), live entries only | O(shards) | O(shards) |
+| Capability | `Cache` | `Expirable` | `Sharded` | `Clock` | `TinyLFU` |
+| --- | --- | --- | --- | --- | --- |
+| Eviction policy | Exact LRU | Exact LRU + TTL | Exact LRU per shard | Approximate (CLOCK) | W-TinyLFU admission |
+| LRU scope | Global | Global | Per shard | Per shard | Per shard |
+| TTL expiration | No | Yes | No | No | No |
+| `Resize` / callbacks | Yes | Yes | Yes, per shard | Yes, per shard | Yes, per shard |
+| Oldest-entry helpers | Yes | Yes | No | No | No |
+| `Keys` / `Values` order | MRU to LRU | MRU to LRU | Per shard | Unspecified | Unspecified |
+| Reads scale with cores | No | No | No | Yes | Yes |
+| Scan and loop resistant | No | No | No | No | Yes |
+| `Len` complexity | O(1) | O(n), live entries only | O(shards) | O(shards) | O(shards) |
 
 On `Cache`, `Expirable`, and `Sharded`, `Get` updates recency and therefore
 takes an exclusive cache lock, so concurrent `Get` calls serialize. Use `Peek`
 when a read should neither change recency nor serialize with other readers.
 
-`Clock` has no recency order to maintain, so its `Get` takes only a read lock.
-It is the one type whose read throughput rises rather than falls as cores are
-added, at the cost of approximate eviction and unordered `Keys`/`Values`.
+`Clock` and `TinyLFU` maintain no exact recency order, so their `Get` takes
+only a read lock and their read throughput rises rather than falls as cores
+are added, at the cost of approximate eviction and unordered `Keys`/`Values`.
+
+Between the two: `Clock` optimizes what a hit costs, `TinyLFU` optimizes how
+often you hit. A point of hit rate saves a hundredth of the miss cost per
+request, so when a miss costs more than about a microsecond (a database query,
+RPC, or disk read), `TinyLFU`'s admission policy is the better default; it also
+survives scans and loops that flush LRU-family caches. Prefer `Clock` when
+misses are nearly free, when the working set fits in capacity, or when traffic
+concentrates on a single hot key. Note that `TinyLFU` admission may evict a
+just-written cold key before it is ever read; use `Clock` or `Cache` when a
+stored entry must survive until evicted by pressure.
 
 `Sharded` helps only when concurrent keys spread across shards. One dominant
 key routes every operation to the same shard, where hashing is pure overhead,
@@ -110,6 +122,16 @@ read lock, so they scale with cores instead of serializing):
 
 ```go
 cache := lru.MustNewClock[string, int](10_000)
+cache.Set("key", 42)
+value, found := cache.Get("key")
+```
+
+Caches in front of expensive misses, or traffic with scans and loops
+(`TinyLFU`'s admission policy keeps one-shot keys from flushing the working
+set):
+
+```go
+cache := lru.MustNewTinyLFU[string, int](10_000)
 cache.Set("key", 42)
 value, found := cache.Get("key")
 ```

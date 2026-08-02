@@ -330,3 +330,52 @@ func ExampleClock_secondChance() {
 	// abed cached: true
 	// britta cached: false
 }
+
+func ExampleTinyLFU() {
+	// TinyLFU reads take only a read lock, so they scale with cores, and its
+	// admission policy keeps one-shot keys from flushing the working set.
+	cache := lru.MustNewTinyLFU[string, int](10_000)
+
+	cache.Set("troy", 1)
+	cache.Set("abed", 2)
+
+	value, found := cache.Get("troy")
+	fmt.Println("troy:", value, found)
+	fmt.Println("len:", cache.Len())
+
+	// Output:
+	// troy: 1 true
+	// len: 2
+}
+
+func ExampleTinyLFU_admission() {
+	// A single shard makes admission deterministic; real deployments keep the
+	// default shard count. Capacity 100 gives a one-slot window and a 99-slot
+	// main area.
+	cache := lru.MustNewTinyLFUWithCount[string, int](100, 1)
+
+	// Fill the cache and give every resident one recorded access so the
+	// frequency sketch knows the working set.
+	for i := 0; i < 100; i++ {
+		cache.Set(fmt.Sprintf("resident-%d", i), i)
+	}
+	for i := 0; i < 100; i++ {
+		cache.Get(fmt.Sprintf("resident-%d", i))
+	}
+
+	// A burst of one-shot keys passes through the window, but candidates that
+	// the sketch does not rank above a resident are rejected, so the scan
+	// cannot flush the working set.
+	for i := 0; i < 50; i++ {
+		cache.Set(fmt.Sprintf("scan-%d", i), i)
+	}
+
+	fmt.Println("resident-42 cached:", cache.Contains("resident-42"))
+	fmt.Println("scan-0 cached:", cache.Contains("scan-0"))
+	fmt.Println("len:", cache.Len())
+
+	// Output:
+	// resident-42 cached: true
+	// scan-0 cached: false
+	// len: 100
+}

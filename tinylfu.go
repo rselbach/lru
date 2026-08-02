@@ -414,6 +414,12 @@ func (c *TinyLFU[K, V]) Contains(key K) bool {
 // the frequency sketch ranks it above the entry it would displace, and
 // otherwise the candidate itself is evicted. Either way at most one entry
 // leaves the cache, and the eviction callback receives it.
+//
+// A consequence is that on a full cache a just-written cold key can be evicted
+// within the next few writes, before it is ever read. That is the admission
+// policy protecting the working set, not a bug; code that stores a value and
+// relies on reading that same key back immediately should use a cache type
+// without an admission policy, such as [Clock] or [Cache].
 // Set panics with [ErrInvalidKey] if key cannot be represented safely.
 func (c *TinyLFU[K, V]) Set(key K, value V) {
 	if !c.hasher.skipKeyCheck {
