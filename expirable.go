@@ -131,8 +131,10 @@ func (c *Expirable[K, V]) Get(key K) (V, bool) {
 	if expiryElapsed(c.timeNow(), e.meta.expiry) {
 		evictedKey := e.key
 		evictedVal := e.val
+		expiry := e.meta.expiry
 		onEvict := c.onEvict
 		c.deleteEntry(e)
+		c.noteRemovedExpiryLocked(expiry)
 		c.mu.Unlock()
 
 		if onEvict != nil {
@@ -198,8 +200,10 @@ func (c *Expirable[K, V]) GetWithTTL(key K) (V, time.Duration, bool) {
 	if expiryElapsed(now, e.meta.expiry) {
 		evictedKey := e.key
 		evictedVal := e.val
+		expiry := e.meta.expiry
 		onEvict := c.onEvict
 		c.deleteEntry(e)
+		c.noteRemovedExpiryLocked(expiry)
 		c.mu.Unlock()
 
 		if onEvict != nil {
@@ -265,7 +269,9 @@ func (c *Expirable[K, V]) GetOrSet(key K, compute func() (V, error), opts ...Set
 		}
 		// expired entry, remove it and save for callback
 		expiredEntry = e
+		expiry := e.meta.expiry
 		c.deleteEntry(e)
+		c.noteRemovedExpiryLocked(expiry)
 	}
 
 	onEvict := c.onEvict
@@ -338,7 +344,9 @@ func (c *Expirable[K, V]) GetOrSetSingleflight(key K, compute func() (V, error),
 			}
 			// expired entry, remove it and save for callback
 			expiredEntry = e
+			expiry := e.meta.expiry
 			c.deleteEntry(e)
+			c.noteRemovedExpiryLocked(expiry)
 		}
 
 		onEvict := c.onEvict
@@ -482,10 +490,17 @@ func (c *Expirable[K, V]) setLocked(key K, value V, ttl time.Duration, collectEv
 		if collectEvicted && expiryElapsed(now, e.meta.expiry) {
 			evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
 		}
+		oldExpiry := e.meta.expiry
 		c.moveToFront(e)
 		e.val = value
 		e.meta.expiry = expiry
-		c.noteExpiryLocked(expiry)
+		// Extending the previous earliest expiry can leave the watermark too
+		// early; recompute so capacity writes do not force a full scan.
+		if c.hasNextExpiry && !oldExpiry.After(c.nextExpiry) && expiry.After(oldExpiry) {
+			c.recomputeNextExpiryLocked()
+		} else {
+			c.noteExpiryLocked(expiry)
+		}
 		return evicted
 	}
 
@@ -504,7 +519,9 @@ func (c *Expirable[K, V]) setLocked(key K, value V, ttl time.Duration, collectEv
 			if collectEvicted {
 				evicted = append(evicted, evictedItem[K, V]{key: oldest.key, val: oldest.val})
 			}
+			oldExpiry := oldest.meta.expiry
 			c.deleteEntry(oldest)
+			c.noteRemovedExpiryLocked(oldExpiry)
 		}
 	}
 
@@ -525,6 +542,34 @@ func (c *Expirable[K, V]) noteExpiryLocked(expiry time.Time) {
 		c.nextExpiry = expiry
 		c.hasNextExpiry = true
 	}
+}
+
+// noteRemovedExpiryLocked updates the earliest-expiry watermark after an entry
+// with the given expiry is removed. Caller must hold c.mu.
+func (c *Expirable[K, V]) noteRemovedExpiryLocked(expiry time.Time) {
+	if len(c.items) == 0 {
+		c.nextExpiry = time.Time{}
+		c.hasNextExpiry = false
+		return
+	}
+	// Watermark is conservative (never later than the true minimum). Recompute
+	// only when the removed entry may have been the earliest.
+	if c.hasNextExpiry && !expiry.After(c.nextExpiry) {
+		c.recomputeNextExpiryLocked()
+	}
+}
+
+func (c *Expirable[K, V]) recomputeNextExpiryLocked() {
+	var nextExpiry time.Time
+	hasNextExpiry := false
+	for e := c.head; e != nil; e = e.next {
+		if !hasNextExpiry || e.meta.expiry.Before(nextExpiry) {
+			nextExpiry = e.meta.expiry
+			hasNextExpiry = true
+		}
+	}
+	c.nextExpiry = nextExpiry
+	c.hasNextExpiry = hasNextExpiry
 }
 
 func (c *Expirable[K, V]) expiryDueLocked(now time.Time) bool {
@@ -569,9 +614,11 @@ func (c *Expirable[K, V]) Remove(key K) bool {
 
 	evictedKey := e.key
 	evictedVal := e.val
+	expiry := e.meta.expiry
 	onEvict := c.onEvict
 
 	c.deleteEntry(e)
+	c.noteRemovedExpiryLocked(expiry)
 	c.mu.Unlock()
 
 	if onEvict != nil {
@@ -614,11 +661,13 @@ func (c *Expirable[K, V]) RemoveOldest() (K, V, bool) {
 
 	for e := c.tail; e != nil; {
 		prev := e.prev
-		if expiryElapsed(now, e.meta.expiry) {
+		expiry := e.meta.expiry
+		if expiryElapsed(now, expiry) {
 			if onEvict != nil {
 				evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
 			}
 			c.deleteEntry(e)
+			c.noteRemovedExpiryLocked(expiry)
 			e = prev
 			continue
 		}
@@ -630,6 +679,7 @@ func (c *Expirable[K, V]) RemoveOldest() (K, V, bool) {
 			evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
 		}
 		c.deleteEntry(e)
+		c.noteRemovedExpiryLocked(expiry)
 		break
 	}
 

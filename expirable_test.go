@@ -788,6 +788,71 @@ func TestExpirable_TracksEarliestExpiry(t *testing.T) {
 	r.False(cache.hasNextExpiry)
 }
 
+func TestExpirable_NextExpiryAfterSingleRemovals(t *testing.T) {
+	r := require.New(t)
+	mockClock := newMockTime()
+	start := mockClock.Now()
+
+	cache := MustNewExpirable[string, int](3, time.Minute)
+	cache.SetTimeNowFunc(mockClock.Now)
+	cache.Set("long", 1)
+	cache.Set("short", 2, WithTTL(30*time.Second))
+	r.Equal(start.Add(30*time.Second), cache.nextExpiry)
+
+	r.True(cache.Remove("short"))
+	r.True(cache.hasNextExpiry)
+	r.Equal(start.Add(time.Minute), cache.nextExpiry)
+
+	cache.Set("mid", 3, WithTTL(45*time.Second))
+	r.Equal(start.Add(45*time.Second), cache.nextExpiry)
+
+	mockClock.Add(46 * time.Second)
+	_, found := cache.Get("mid")
+	r.False(found)
+	r.True(cache.hasNextExpiry)
+	r.Equal(start.Add(time.Minute), cache.nextExpiry)
+
+	r.True(cache.Remove("long"))
+	r.False(cache.hasNextExpiry)
+	r.True(cache.nextExpiry.IsZero())
+}
+
+func TestExpirable_NextExpiryAfterRemoveOldest(t *testing.T) {
+	r := require.New(t)
+	mockClock := newMockTime()
+	start := mockClock.Now()
+
+	cache := MustNewExpirable[string, int](3, time.Minute)
+	cache.SetTimeNowFunc(mockClock.Now)
+	cache.Set("a", 1, WithTTL(20*time.Second))
+	cache.Set("b", 2, WithTTL(40*time.Second))
+	cache.Set("c", 3, WithTTL(60*time.Second))
+
+	mockClock.Add(21 * time.Second)
+	// Removes expired tail "a", then the live oldest "b".
+	key, _, found := cache.RemoveOldest()
+	r.True(found)
+	r.Equal("b", key)
+	r.True(cache.hasNextExpiry)
+	r.Equal(start.Add(60*time.Second), cache.nextExpiry)
+}
+
+func TestExpirable_NextExpiryAfterExtendingEarliest(t *testing.T) {
+	r := require.New(t)
+	mockClock := newMockTime()
+	start := mockClock.Now()
+
+	cache := MustNewExpirable[string, int](2, time.Minute)
+	cache.SetTimeNowFunc(mockClock.Now)
+	cache.Set("short", 1, WithTTL(30*time.Second))
+	cache.Set("long", 2)
+	r.Equal(start.Add(30*time.Second), cache.nextExpiry)
+
+	cache.Set("short", 3, WithTTL(2*time.Minute))
+	r.True(cache.hasNextExpiry)
+	r.Equal(start.Add(time.Minute), cache.nextExpiry)
+}
+
 func TestExpirable_ZeroTimeExpiryIsTracked(t *testing.T) {
 	r := require.New(t)
 	now := time.Time{}.Add(-time.Nanosecond)
