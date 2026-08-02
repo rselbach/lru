@@ -5,6 +5,15 @@ import (
 	"sync"
 )
 
+func wrapShardCountExceedsCapacity(shardCount, capacity int) error {
+	return fmt.Errorf("%w: shard count (%d) cannot exceed capacity (%d)",
+		ErrShardCountExceedsCapacity, shardCount, capacity)
+}
+
+func wrapCapacityBelowShardCount(shardCount int) error {
+	return fmt.Errorf("%w (%d)", ErrCapacityBelowShardCount, shardCount)
+}
+
 // DefaultShardCount is the default number of shards for a Sharded cache.
 //
 // It suits moderate concurrency. Throughput keeps improving with more shards
@@ -78,7 +87,7 @@ func NewShardedWithCount[K comparable, V any](capacity, shardCount int) (*Sharde
 		return nil, ErrInvalidShardCount
 	}
 	if shardCount > capacity {
-		return nil, fmt.Errorf("%w: shard count (%d) cannot exceed capacity (%d)", ErrShardCountExceedsCapacity, shardCount, capacity)
+		return nil, wrapShardCountExceedsCapacity(shardCount, capacity)
 	}
 
 	// distribute capacity evenly, with remainder going to first shards
@@ -259,7 +268,7 @@ func (s *Sharded[K, V]) Resize(capacity int) (int, error) {
 
 	shardCount := len(s.shards)
 	if capacity < shardCount {
-		return 0, fmt.Errorf("%w (%d)", ErrCapacityBelowShardCount, shardCount)
+		return 0, wrapCapacityBelowShardCount(shardCount)
 	}
 
 	s.mu.Lock()

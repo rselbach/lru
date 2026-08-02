@@ -280,3 +280,53 @@ func Example_evictionCallback() {
 	// All evicted keys: [a b c d]
 	// All evicted values: [1 2 3 4]
 }
+
+func ExampleClock() {
+	// Clock approximates LRU so reads take only a read lock, which lets read
+	// throughput rise with core count instead of serializing.
+	cache := lru.MustNewClock[string, int](100)
+
+	cache.Set("troy", 1)
+	cache.Set("abed", 2)
+
+	value, found := cache.Get("abed")
+	fmt.Println("abed:", value, found)
+
+	// Peek reads without marking the entry as recently referenced.
+	value, found = cache.Peek("troy")
+	fmt.Println("troy:", value, found)
+	fmt.Println("len:", cache.Len())
+
+	// Output:
+	// abed: 2 true
+	// troy: 1 true
+	// len: 2
+}
+
+func ExampleClock_secondChance() {
+	// A single shard makes the eviction hand's path deterministic. Capacity is
+	// split across shards, so real deployments leave the default shard count.
+	cache := lru.MustNewClockWithCount[string, int](3, 1)
+
+	cache.Set("troy", 1)
+	cache.Set("abed", 2)
+	cache.Set("britta", 3)
+
+	// Every entry is referenced, so this insert sweeps the ring clearing bits
+	// and evicts the first slot.
+	cache.Set("shirley", 4)
+	fmt.Println("troy cached:", cache.Contains("troy"))
+
+	// Referencing abed buys it a second chance, so the hand passes over it and
+	// takes the still-unreferenced britta instead.
+	cache.Get("abed")
+	cache.Set("pierce", 5)
+
+	fmt.Println("abed cached:", cache.Contains("abed"))
+	fmt.Println("britta cached:", cache.Contains("britta"))
+
+	// Output:
+	// troy cached: false
+	// abed cached: true
+	// britta cached: false
+}

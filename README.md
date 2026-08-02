@@ -25,25 +25,31 @@ The v1 API remains available at `github.com/rselbach/lru`.
 - Thread-safe for concurrent access
 - Optional time-based expiration (`Expirable`)
 - Sharded cache for reduced lock contention (`Sharded`)
+- Approximate-LRU cache whose reads scale with cores (`Clock`)
 - `GetOrSet` / `GetOrSetSingleflight` memoization
 - Eviction callbacks and `Resize` on every cache type
 - Oldest-entry helpers on non-sharded caches
 
 ## Cache Types
 
-| Capability | `Cache` | `Expirable` | `Sharded` |
-| --- | --- | --- | --- |
-| LRU scope | Global | Global | Per shard |
-| TTL expiration | No | Yes | No |
-| `Resize` / callbacks | Yes | Yes | Yes, per shard |
-| Oldest-entry helpers | Yes | Yes | No |
-| `Len` complexity | O(1) | O(n), live entries only | O(shards) |
+| Capability | `Cache` | `Expirable` | `Sharded` | `Clock` |
+| --- | --- | --- | --- | --- |
+| Eviction policy | Exact LRU | Exact LRU + TTL | Exact LRU per shard | Approximate (CLOCK) |
+| LRU scope | Global | Global | Per shard | Per shard |
+| TTL expiration | No | Yes | No | No |
+| `Resize` / callbacks | Yes | Yes | Yes, per shard | Yes, per shard |
+| Oldest-entry helpers | Yes | Yes | No | No |
+| `Keys` / `Values` order | MRU to LRU | MRU to LRU | Per shard | Unspecified |
+| Reads scale with cores | No | No | No | Yes |
+| `Len` complexity | O(1) | O(n), live entries only | O(shards) | O(shards) |
 
-`Get` updates recency and therefore takes an exclusive cache lock, so
-concurrent `Get` calls serialize on every cache type. Use `Peek` when a read
-should neither change recency nor serialize with other readers; `Peek` on a
-`Sharded` cache is the only combination whose throughput rises as cores are
-added.
+On `Cache`, `Expirable`, and `Sharded`, `Get` updates recency and therefore
+takes an exclusive cache lock, so concurrent `Get` calls serialize. Use `Peek`
+when a read should neither change recency nor serialize with other readers.
+
+`Clock` has no recency order to maintain, so its `Get` takes only a read lock.
+It is the one type whose read throughput rises rather than falls as cores are
+added, at the cost of approximate eviction and unordered `Keys`/`Values`.
 
 `Sharded` helps only when concurrent keys spread across shards. One dominant
 key routes every operation to the same shard, where hashing is pure overhead,
@@ -97,6 +103,15 @@ Sharded cache for high-concurrency workloads (per-shard LRU, not global):
 ```go
 cache := lru.MustNewSharded[string, int](10_000)
 cache.Set("key", 42)
+```
+
+Read-heavy workloads that can accept approximate eviction (`Clock` reads take a
+read lock, so they scale with cores instead of serializing):
+
+```go
+cache := lru.MustNewClock[string, int](10_000)
+cache.Set("key", 42)
+value, found := cache.Get("key")
 ```
 
 See the [package documentation](https://pkg.go.dev/github.com/rselbach/lru/v2)

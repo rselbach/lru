@@ -1,10 +1,11 @@
 // Package lru provides generic, thread-safe LRU cache implementations.
 //
-// Three cache types are provided:
+// Four cache types are provided:
 //
 //   - [Cache]: A standard LRU cache with fixed capacity
 //   - [Expirable]: An LRU cache with per-entry TTL expiration
 //   - [Sharded]: A sharded LRU cache for reduced lock contention under high concurrency
+//   - [Clock]: A sharded cache that approximates LRU so reads scale with cores
 //
 // All are safe for concurrent use and support eviction callbacks.
 //
@@ -104,14 +105,31 @@
 // for the working set; very small shards evict entries a global LRU would
 // have kept.
 //
+// # Clock Cache
+//
+// A [Clock] cache trades exact LRU order for read throughput. Entries carry a
+// reference bit that a hit sets, and eviction advances a hand that clears bits
+// and evicts the first entry it finds already clear, so a read reorders nothing
+// and needs only a read lock. Like [Sharded] it splits capacity across shards,
+// which is what keeps the lock word itself from becoming the bottleneck.
+//
+// In exchange it keeps no recency order: there is no oldest-entry accessor,
+// [Clock.Keys] and [Clock.Values] return entries in an unspecified order, and
+// eviction picks an entry that has not been referenced recently rather than
+// strictly the least recently used one. Choose [Cache] when order matters and
+// Clock when read throughput does.
+//
 // # Concurrency
 //
-// Get updates recency, so it takes the cache's exclusive lock on every cache
-// type and concurrent Get calls serialize against each other. [Cache.Peek],
-// [Expirable.Peek], and [Sharded.Peek] take a read lock instead, at the cost
-// of not refreshing recency. Reads that do not need recency updates therefore
-// scale considerably better, and combining Peek with [Sharded] is the only
-// arrangement whose throughput rises with additional cores.
+// Get updates recency, so on [Cache], [Expirable], and [Sharded] it takes the
+// exclusive lock and concurrent Get calls serialize against each other.
+// [Cache.Peek], [Expirable.Peek], and [Sharded.Peek] take a read lock instead,
+// at the cost of not refreshing recency, so reads that do not need recency
+// updates scale considerably better.
+//
+// [Clock.Get] takes only a read lock because it has no order to maintain, which
+// is why a Clock cache is the one type whose read throughput rises rather than
+// falls as cores are added.
 //
 // # Eviction Callbacks
 //
@@ -123,21 +141,24 @@
 //
 // When OnEvict runs:
 //
-//   - Capacity eviction: Cache, Expirable, and Sharded
-//   - [Cache.Remove] / [Expirable.Remove] / [Sharded.Remove]: yes (Expirable
-//     includes already-expired entries still present in storage)
+//   - Capacity eviction: Cache, Expirable, Sharded, and Clock
+//   - [Cache.Remove] / [Expirable.Remove] / [Sharded.Remove] / [Clock.Remove]:
+//     yes (Expirable includes already-expired entries still present in storage)
 //   - [Cache.RemoveOldest] / [Expirable.RemoveOldest]: yes
-//   - [Cache.Clear] / [Expirable.Clear]: every stored entry, least- to
-//     most-recently used, including unpurged expired entries
+//   - [Cache.Clear] / [Expirable.Clear] / [Clock.Clear]: every stored entry,
+//     least- to most-recently used for the LRU types, unspecified order for
+//     Clock, including unpurged expired entries for Expirable
 //   - [Expirable.RemoveExpired], janitor, and capacity expiry cleanup: yes
 //   - [Expirable.Set] replacing an already-expired entry: yes for the old value
-//   - [Cache.Set] / [Expirable.Set] / [Sharded.Set] replacing a live entry:
-//     no; the previous value is discarded without a callback
-//   - [Cache.Resize] / [Expirable.Resize] / [Sharded.Resize]: yes for live
-//     evictions (Expirable also reports expired entries purged during resize)
+//   - [Cache.Set] / [Expirable.Set] / [Sharded.Set] / [Clock.Set] replacing a
+//     live entry: no; the previous value is discarded without a callback
+//   - [Cache.Resize] / [Expirable.Resize] / [Sharded.Resize] / [Clock.Resize]:
+//     yes for live evictions (Expirable also reports expired entries purged
+//     during resize)
 //
 // Resize and Clear report evicted entries in order from least recently used to
-// most recently used within the cache (or within each shard for [Sharded]).
+// most recently used within the cache (or within each shard for [Sharded]);
+// [Clock] keeps no such order and reports them in an unspecified one.
 // They collect the entries to report while holding the cache lock so the
 // callbacks can run without it, which costs one buffered key/value pair per
 // evicted entry; clearing a large cache with a callback set allocates in
