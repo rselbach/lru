@@ -7,9 +7,29 @@ import (
 	"sync"
 )
 
-// ErrInvalidKey is returned when a key is not dynamically comparable or is
-// not equal to itself, such as a floating-point NaN.
-var ErrInvalidKey = errors.New("lru: key must be dynamically comparable and equal to itself")
+var (
+	// ErrInvalidKey is returned when a key is not dynamically comparable or is
+	// not equal to itself, such as a floating-point NaN.
+	ErrInvalidKey = errors.New("lru: key must be dynamically comparable and equal to itself")
+
+	// ErrInvalidCapacity is returned when a cache capacity is zero or negative.
+	ErrInvalidCapacity = errors.New("lru: capacity must be greater than zero")
+
+	// ErrInvalidShardCount is returned when a shard count is zero or negative.
+	ErrInvalidShardCount = errors.New("lru: shard count must be greater than zero")
+
+	// ErrShardCountExceedsCapacity is returned when an explicit shard count is
+	// greater than the total capacity.
+	ErrShardCountExceedsCapacity = errors.New("lru: shard count cannot exceed capacity")
+
+	// ErrCapacityBelowShardCount is returned when Resize would leave a sharded
+	// cache with fewer slots than shards.
+	ErrCapacityBelowShardCount = errors.New("lru: capacity must be at least shard count")
+
+	// ErrInvalidJanitorInterval is returned when a janitor interval is zero or
+	// negative.
+	ErrInvalidJanitorInterval = errors.New("lru: janitor interval must be greater than zero")
+)
 
 // initialAllocationLimit avoids capacity-sized allocations for sparse caches.
 const initialAllocationLimit = 1024

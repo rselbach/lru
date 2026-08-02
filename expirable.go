@@ -16,7 +16,7 @@ func expiryElapsed(now, expiry time.Time) bool {
 }
 
 // ErrInvalidTTL is returned when a TTL override is zero or negative.
-var ErrInvalidTTL = errors.New("TTL must be greater than zero")
+var ErrInvalidTTL = errors.New("lru: TTL must be greater than zero")
 
 // ErrJanitorStopping is returned when StartJanitor is called while a previously
 // signaled janitor is still exiting.
@@ -86,7 +86,7 @@ func (c *Expirable[K, V]) resolveTTL(opt setOptions) time.Duration {
 // The capacity must be greater than zero, and the TTL must be greater than zero.
 func NewExpirable[K comparable, V any](capacity int, ttl time.Duration) (*Expirable[K, V], error) {
 	if capacity <= 0 {
-		return nil, errors.New("capacity must be greater than zero")
+		return nil, ErrInvalidCapacity
 	}
 	if ttl <= 0 {
 		return nil, ErrInvalidTTL
@@ -411,7 +411,7 @@ func (c *Expirable[K, V]) Set(key K, value V, opts ...SetOption) {
 // are evicted until the cache length is less than or equal to capacity.
 func (c *Expirable[K, V]) Resize(capacity int) (int, error) {
 	if capacity <= 0 {
-		return 0, errors.New("capacity must be greater than zero")
+		return 0, ErrInvalidCapacity
 	}
 
 	c.mu.Lock()
@@ -842,7 +842,7 @@ func (c *Expirable[K, V]) SetTTL(ttl time.Duration) error {
 // stopping the janitor leaks the goroutine.
 func (c *Expirable[K, V]) StartJanitor(interval time.Duration) error {
 	if interval <= 0 {
-		return errors.New("janitor interval must be greater than zero")
+		return ErrInvalidJanitorInterval
 	}
 
 	c.janitorMu.Lock()

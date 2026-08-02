@@ -2,7 +2,6 @@ package lru
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"hash/maphash"
 	"math"
@@ -65,13 +64,13 @@ func MustNewSharded[K comparable, V any](capacity int) *Sharded[K, V] {
 // String or Format methods. Equal keys are always assigned to the same shard.
 func NewShardedWithCount[K comparable, V any](capacity, shardCount int) (*Sharded[K, V], error) {
 	if capacity <= 0 {
-		return nil, errors.New("capacity must be greater than zero")
+		return nil, ErrInvalidCapacity
 	}
 	if shardCount <= 0 {
-		return nil, errors.New("shard count must be greater than zero")
+		return nil, ErrInvalidShardCount
 	}
 	if shardCount > capacity {
-		return nil, fmt.Errorf("shard count (%d) cannot exceed capacity (%d)", shardCount, capacity)
+		return nil, fmt.Errorf("%w: shard count (%d) cannot exceed capacity (%d)", ErrShardCountExceedsCapacity, shardCount, capacity)
 	}
 
 	// distribute capacity evenly, with remainder going to first shards
@@ -392,12 +391,12 @@ type shardedEviction[K comparable, V any] struct {
 // every shard keeps at least one slot.
 func (s *Sharded[K, V]) Resize(capacity int) (int, error) {
 	if capacity <= 0 {
-		return 0, errors.New("capacity must be greater than zero")
+		return 0, ErrInvalidCapacity
 	}
 
 	shardCount := len(s.shards)
 	if capacity < shardCount {
-		return 0, fmt.Errorf("capacity must be at least shard count (%d)", shardCount)
+		return 0, fmt.Errorf("%w (%d)", ErrCapacityBelowShardCount, shardCount)
 	}
 
 	s.mu.Lock()

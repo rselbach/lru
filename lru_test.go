@@ -38,19 +38,18 @@ func TestAllocationHint(t *testing.T) {
 func TestCache_New(t *testing.T) {
 	tests := map[string]struct {
 		capacity int
-		wantErr  bool
+		wantErr  error
 	}{
 		"valid capacity": {
 			capacity: 5,
-			wantErr:  false,
 		},
 		"zero capacity": {
 			capacity: 0,
-			wantErr:  true,
+			wantErr:  ErrInvalidCapacity,
 		},
 		"negative capacity": {
 			capacity: -1,
-			wantErr:  true,
+			wantErr:  ErrInvalidCapacity,
 		},
 	}
 
@@ -59,8 +58,8 @@ func TestCache_New(t *testing.T) {
 			r := require.New(t)
 
 			cache, err := New[string, int](tc.capacity)
-			if tc.wantErr {
-				r.Error(err)
+			if tc.wantErr != nil {
+				r.ErrorIs(err, tc.wantErr)
 				r.Nil(cache)
 			} else {
 				r.NoError(err)
@@ -73,23 +72,19 @@ func TestCache_New(t *testing.T) {
 
 func TestCache_MustNew(t *testing.T) {
 	tests := map[string]struct {
-		capacity     int
-		wantPanic    bool
-		wantPanicMsg string
+		capacity  int
+		wantPanic error
 	}{
 		"valid capacity": {
-			capacity:  5,
-			wantPanic: false,
+			capacity: 5,
 		},
 		"zero capacity": {
-			capacity:     0,
-			wantPanic:    true,
-			wantPanicMsg: "capacity must be greater than zero",
+			capacity:  0,
+			wantPanic: ErrInvalidCapacity,
 		},
 		"negative capacity": {
-			capacity:     -1,
-			wantPanic:    true,
-			wantPanicMsg: "capacity must be greater than zero",
+			capacity:  -1,
+			wantPanic: ErrInvalidCapacity,
 		},
 	}
 
@@ -97,8 +92,8 @@ func TestCache_MustNew(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r := require.New(t)
 
-			if tc.wantPanic {
-				r.PanicsWithError(tc.wantPanicMsg, func() {
+			if tc.wantPanic != nil {
+				r.PanicsWithError(tc.wantPanic.Error(), func() {
 					MustNew[string, int](tc.capacity)
 				})
 			} else {
@@ -515,7 +510,7 @@ func TestCache_Resize(t *testing.T) {
 	r.Equal([]string{"a", "b", "c"}, evictedKeys)
 
 	evicted, err = cache.Resize(0)
-	r.Error(err)
+	r.ErrorIs(err, ErrInvalidCapacity)
 	r.Equal(0, evicted)
 	r.Equal(2, cache.Capacity())
 }

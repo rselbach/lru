@@ -39,32 +39,31 @@ func TestExpirable_New(t *testing.T) {
 	tests := map[string]struct {
 		capacity int
 		ttl      time.Duration
-		wantErr  bool
+		wantErr  error
 	}{
 		"valid parameters": {
 			capacity: 5,
 			ttl:      time.Minute,
-			wantErr:  false,
 		},
 		"zero capacity": {
 			capacity: 0,
 			ttl:      time.Minute,
-			wantErr:  true,
+			wantErr:  ErrInvalidCapacity,
 		},
 		"negative capacity": {
 			capacity: -1,
 			ttl:      time.Minute,
-			wantErr:  true,
+			wantErr:  ErrInvalidCapacity,
 		},
 		"zero ttl": {
 			capacity: 5,
 			ttl:      0,
-			wantErr:  true,
+			wantErr:  ErrInvalidTTL,
 		},
 		"negative ttl": {
 			capacity: 5,
 			ttl:      -time.Second,
-			wantErr:  true,
+			wantErr:  ErrInvalidTTL,
 		},
 	}
 
@@ -73,8 +72,8 @@ func TestExpirable_New(t *testing.T) {
 			r := require.New(t)
 
 			cache, err := NewExpirable[string, int](tc.capacity, tc.ttl)
-			if tc.wantErr {
-				r.Error(err)
+			if tc.wantErr != nil {
+				r.ErrorIs(err, tc.wantErr)
 				r.Nil(cache)
 			} else {
 				r.NoError(err)
@@ -88,39 +87,33 @@ func TestExpirable_New(t *testing.T) {
 
 func TestExpirable_MustNew(t *testing.T) {
 	tests := map[string]struct {
-		capacity     int
-		ttl          time.Duration
-		wantPanic    bool
-		wantPanicMsg string
+		capacity  int
+		ttl       time.Duration
+		wantPanic error
 	}{
 		"valid parameters": {
-			capacity:  5,
-			ttl:       time.Minute,
-			wantPanic: false,
+			capacity: 5,
+			ttl:      time.Minute,
 		},
 		"zero capacity": {
-			capacity:     0,
-			ttl:          time.Minute,
-			wantPanic:    true,
-			wantPanicMsg: "capacity must be greater than zero",
+			capacity:  0,
+			ttl:       time.Minute,
+			wantPanic: ErrInvalidCapacity,
 		},
 		"negative capacity": {
-			capacity:     -1,
-			ttl:          time.Minute,
-			wantPanic:    true,
-			wantPanicMsg: "capacity must be greater than zero",
+			capacity:  -1,
+			ttl:       time.Minute,
+			wantPanic: ErrInvalidCapacity,
 		},
 		"zero ttl": {
-			capacity:     5,
-			ttl:          0,
-			wantPanic:    true,
-			wantPanicMsg: "TTL must be greater than zero",
+			capacity:  5,
+			ttl:       0,
+			wantPanic: ErrInvalidTTL,
 		},
 		"negative ttl": {
-			capacity:     5,
-			ttl:          -time.Second,
-			wantPanic:    true,
-			wantPanicMsg: "TTL must be greater than zero",
+			capacity:  5,
+			ttl:       -time.Second,
+			wantPanic: ErrInvalidTTL,
 		},
 	}
 
@@ -128,8 +121,8 @@ func TestExpirable_MustNew(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r := require.New(t)
 
-			if tc.wantPanic {
-				r.PanicsWithError(tc.wantPanicMsg, func() {
+			if tc.wantPanic != nil {
+				r.PanicsWithError(tc.wantPanic.Error(), func() {
 					MustNewExpirable[string, int](tc.capacity, tc.ttl)
 				})
 			} else {
@@ -464,8 +457,8 @@ func TestExpirable_JanitorLifecycle(t *testing.T) {
 	r := require.New(t)
 	cache := MustNewExpirable[string, int](5, time.Minute)
 
-	r.Error(cache.StartJanitor(0))
-	r.Error(cache.StartJanitor(-time.Second))
+	r.ErrorIs(cache.StartJanitor(0), ErrInvalidJanitorInterval)
+	r.ErrorIs(cache.StartJanitor(-time.Second), ErrInvalidJanitorInterval)
 
 	r.NoError(cache.StartJanitor(5 * time.Millisecond))
 	r.NoError(cache.StartJanitor(5*time.Millisecond), "starting an already running janitor should be a no-op")
@@ -958,7 +951,7 @@ func TestExpirable_Resize(t *testing.T) {
 	r.Equal([]string{"a", "b", "c"}, evictedKeys)
 
 	evicted, err = cache.Resize(0)
-	r.Error(err)
+	r.ErrorIs(err, ErrInvalidCapacity)
 	r.Equal(0, evicted)
 	r.Equal(2, cache.Capacity())
 }

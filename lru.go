@@ -1,9 +1,5 @@
 package lru
 
-import (
-	"errors"
-)
-
 // Cache represents a thread-safe, fixed-size LRU cache.
 // A Cache must be created with [New] or [MustNew]; the zero value is not ready
 // for use. A Cache must not be copied after first use.
@@ -15,7 +11,7 @@ type Cache[K comparable, V any] struct {
 // The capacity must be greater than zero.
 func New[K comparable, V any](capacity int) (*Cache[K, V], error) {
 	if capacity <= 0 {
-		return nil, errors.New("capacity must be greater than zero")
+		return nil, ErrInvalidCapacity
 	}
 
 	return &Cache[K, V]{
@@ -211,7 +207,7 @@ func (c *Cache[K, V]) Set(key K, value V) {
 // cache length is less than or equal to capacity.
 func (c *Cache[K, V]) Resize(capacity int) (int, error) {
 	if capacity <= 0 {
-		return 0, errors.New("capacity must be greater than zero")
+		return 0, ErrInvalidCapacity
 	}
 
 	c.mu.Lock()

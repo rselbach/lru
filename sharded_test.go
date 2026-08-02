@@ -13,19 +13,18 @@ import (
 func TestSharded_New(t *testing.T) {
 	tests := map[string]struct {
 		capacity int
-		wantErr  bool
+		wantErr  error
 	}{
 		"valid capacity": {
 			capacity: 100,
-			wantErr:  false,
 		},
 		"zero capacity": {
 			capacity: 0,
-			wantErr:  true,
+			wantErr:  ErrInvalidCapacity,
 		},
 		"negative capacity": {
 			capacity: -1,
-			wantErr:  true,
+			wantErr:  ErrInvalidCapacity,
 		},
 	}
 
@@ -34,8 +33,8 @@ func TestSharded_New(t *testing.T) {
 			r := require.New(t)
 
 			cache, err := NewSharded[string, int](tc.capacity)
-			if tc.wantErr {
-				r.Error(err)
+			if tc.wantErr != nil {
+				r.ErrorIs(err, tc.wantErr)
 				r.Nil(cache)
 			} else {
 				r.NoError(err)
@@ -59,32 +58,31 @@ func TestSharded_NewWithCount(t *testing.T) {
 	tests := map[string]struct {
 		capacity   int
 		shardCount int
-		wantErr    bool
+		wantErr    error
 	}{
 		"valid capacity and shard count": {
 			capacity:   100,
 			shardCount: 8,
-			wantErr:    false,
 		},
 		"zero capacity": {
 			capacity:   0,
 			shardCount: 8,
-			wantErr:    true,
+			wantErr:    ErrInvalidCapacity,
 		},
 		"zero shard count": {
 			capacity:   100,
 			shardCount: 0,
-			wantErr:    true,
+			wantErr:    ErrInvalidShardCount,
 		},
 		"negative shard count": {
 			capacity:   100,
 			shardCount: -1,
-			wantErr:    true,
+			wantErr:    ErrInvalidShardCount,
 		},
 		"more shards than capacity": {
 			capacity:   4,
 			shardCount: 16,
-			wantErr:    true,
+			wantErr:    ErrShardCountExceedsCapacity,
 		},
 	}
 
@@ -93,8 +91,8 @@ func TestSharded_NewWithCount(t *testing.T) {
 			r := require.New(t)
 
 			cache, err := NewShardedWithCount[string, int](tc.capacity, tc.shardCount)
-			if tc.wantErr {
-				r.Error(err)
+			if tc.wantErr != nil {
+				r.ErrorIs(err, tc.wantErr)
 				r.Nil(cache)
 			} else {
 				r.NoError(err)
@@ -108,18 +106,15 @@ func TestSharded_NewWithCount(t *testing.T) {
 
 func TestSharded_MustNew(t *testing.T) {
 	tests := map[string]struct {
-		capacity     int
-		wantPanic    bool
-		wantPanicMsg string
+		capacity  int
+		wantPanic error
 	}{
 		"valid capacity": {
-			capacity:  100,
-			wantPanic: false,
+			capacity: 100,
 		},
 		"zero capacity": {
-			capacity:     0,
-			wantPanic:    true,
-			wantPanicMsg: "capacity must be greater than zero",
+			capacity:  0,
+			wantPanic: ErrInvalidCapacity,
 		},
 	}
 
@@ -127,8 +122,8 @@ func TestSharded_MustNew(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r := require.New(t)
 
-			if tc.wantPanic {
-				r.PanicsWithError(tc.wantPanicMsg, func() {
+			if tc.wantPanic != nil {
+				r.PanicsWithError(tc.wantPanic.Error(), func() {
 					MustNewSharded[string, int](tc.capacity)
 				})
 			} else {
@@ -142,27 +137,23 @@ func TestSharded_MustNew(t *testing.T) {
 
 func TestSharded_MustNewWithCount(t *testing.T) {
 	tests := map[string]struct {
-		capacity     int
-		shardCount   int
-		wantPanic    bool
-		wantPanicMsg string
+		capacity   int
+		shardCount int
+		wantPanic  error
 	}{
 		"valid": {
 			capacity:   100,
 			shardCount: 8,
-			wantPanic:  false,
 		},
 		"zero shard count": {
-			capacity:     100,
-			shardCount:   0,
-			wantPanic:    true,
-			wantPanicMsg: "shard count must be greater than zero",
+			capacity:   100,
+			shardCount: 0,
+			wantPanic:  ErrInvalidShardCount,
 		},
 		"more shards than capacity": {
-			capacity:     4,
-			shardCount:   16,
-			wantPanic:    true,
-			wantPanicMsg: "shard count (16) cannot exceed capacity (4)",
+			capacity:   4,
+			shardCount: 16,
+			wantPanic:  ErrShardCountExceedsCapacity,
 		},
 	}
 
@@ -170,10 +161,19 @@ func TestSharded_MustNewWithCount(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r := require.New(t)
 
-			if tc.wantPanic {
-				r.PanicsWithError(tc.wantPanicMsg, func() {
+			if tc.wantPanic != nil {
+				var panicked error
+				func() {
+					defer func() {
+						p := recover()
+						r.NotNil(p)
+						err, ok := p.(error)
+						r.True(ok)
+						panicked = err
+					}()
 					MustNewShardedWithCount[string, int](tc.capacity, tc.shardCount)
-				})
+				}()
+				r.ErrorIs(panicked, tc.wantPanic)
 			} else {
 				cache := MustNewShardedWithCount[string, int](tc.capacity, tc.shardCount)
 				r.NotNil(cache)
@@ -962,7 +962,7 @@ func TestSharded_Resize(t *testing.T) {
 	r.Equal([]int{3, 2}, shardedShardCapacities(cache))
 
 	evicted, err = cache.Resize(1)
-	r.Error(err)
+	r.ErrorIs(err, ErrCapacityBelowShardCount)
 	r.Equal(0, evicted)
 	r.Equal(5, cache.Capacity())
 	r.Equal([]int{3, 2}, shardedShardCapacities(cache))
