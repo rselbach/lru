@@ -363,7 +363,9 @@ func (s *Sharded[K, V]) Keys() []K {
 // order is not preserved across shards.
 //
 // The result is a point-in-time snapshot and is not atomic with respect to
-// concurrent updates.
+// concurrent updates. Keys and Values are separate snapshots taken shard by
+// shard, so their elements line up only when no other goroutine writes to the
+// cache between the two calls.
 func (s *Sharded[K, V]) Values() []V {
 	values := make([]V, 0, s.Len())
 	for _, shard := range s.shards {

@@ -768,6 +768,10 @@ func (c *Expirable[K, V]) Keys() []K {
 
 // Values returns a slice of all values in the cache that haven't expired.
 // The order matches [Expirable.Keys]: most recently used to least recently used.
+//
+// Keys and Values are separate snapshots taken under separate lock holds, so
+// their elements line up only when no other goroutine writes to the cache
+// between the two calls, and only when no entry expires between them.
 func (c *Expirable[K, V]) Values() []V {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

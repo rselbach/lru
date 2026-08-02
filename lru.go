@@ -394,6 +394,10 @@ func (c *Cache[K, V]) appendKeysLocked(keys []K) []K {
 
 // Values returns a slice of all values in the cache.
 // The order matches [Cache.Keys]: most recently used to least recently used.
+//
+// Keys and Values are separate snapshots taken under separate lock holds, so
+// their elements line up only when no other goroutine writes to the cache
+// between the two calls.
 func (c *Cache[K, V]) Values() []V {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
