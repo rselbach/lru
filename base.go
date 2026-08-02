@@ -41,6 +41,33 @@ func allocationHint(size int) int {
 	return size
 }
 
+// keysNeedValidation reports whether keys of type K can ever fail validateKey.
+// Only floating-point components, which can be NaN, and interface components,
+// which can hold dynamically uncomparable values, can fail. The answer depends
+// only on K, so caches resolve it once at construction instead of reflecting on
+// every operation.
+func keysNeedValidation[K comparable]() bool {
+	return typeNeedsValidation(reflect.TypeOf((*K)(nil)).Elem())
+}
+
+func typeNeedsValidation(t reflect.Type) bool {
+	switch t.Kind() {
+	case reflect.Float32, reflect.Float64,
+		reflect.Complex64, reflect.Complex128,
+		reflect.Interface:
+		return true
+	case reflect.Array:
+		return typeNeedsValidation(t.Elem())
+	case reflect.Struct:
+		for i := 0; i < t.NumField(); i++ {
+			if typeNeedsValidation(t.Field(i).Type) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func validateKey[K comparable](key K) (err error) {
 	switch value := any(key).(type) {
 	case string, bool,
@@ -145,13 +172,27 @@ type base[K comparable, V any, M any] struct {
 	mu       sync.RWMutex
 	onEvict  OnEvictFunc[K, V]
 	sfGroup  flightGroup[K, V]
+	// skipKeyCheck is set when K can never produce an invalid key. The zero
+	// value validates, so an uninitialized base stays safe.
+	skipKeyCheck bool
 }
 
 func newBase[K comparable, V any, M any](capacity int) base[K, V, M] {
+	skipKeyCheck := !keysNeedValidation[K]()
 	return base[K, V, M]{
-		capacity: capacity,
-		items:    make(map[K]*entry[K, V, M], allocationHint(capacity)),
+		capacity:     capacity,
+		items:        make(map[K]*entry[K, V, M], allocationHint(capacity)),
+		sfGroup:      flightGroup[K, V]{skipKeyCheck: skipKeyCheck},
+		skipKeyCheck: skipKeyCheck,
 	}
+}
+
+// checkKey validates key unless K is a type whose values are always valid keys.
+func (c *base[K, V, M]) checkKey(key K) error {
+	if c.skipKeyCheck {
+		return nil
+	}
+	return validateKey(key)
 }
 
 // moveToFront moves an entry to the front of the list.

@@ -115,7 +115,7 @@ func MustNewExpirable[K comparable, V any](capacity int, ttl time.Duration) *Exp
 // Expired items are removed when accessed.
 func (c *Expirable[K, V]) Get(key K) (V, bool) {
 	var zero V
-	if validateKey(key) != nil {
+	if c.checkKey(key) != nil {
 		return zero, false
 	}
 
@@ -158,7 +158,7 @@ func (c *Expirable[K, V]) Get(key K) (V, bool) {
 // Use [Expirable.RemoveExpired] to explicitly purge expired entries.
 func (c *Expirable[K, V]) Peek(key K) (V, bool) {
 	var zero V
-	if validateKey(key) != nil {
+	if c.checkKey(key) != nil {
 		return zero, false
 	}
 
@@ -182,7 +182,7 @@ func (c *Expirable[K, V]) Peek(key K) (V, bool) {
 // Expired items are removed when accessed.
 func (c *Expirable[K, V]) GetWithTTL(key K) (V, time.Duration, bool) {
 	var zero V
-	if validateKey(key) != nil {
+	if c.checkKey(key) != nil {
 		return zero, 0, false
 	}
 
@@ -231,7 +231,7 @@ func (c *Expirable[K, V]) GetWithTTL(key K) (V, time.Duration, bool) {
 // Options can be passed to customize the entry, such as [WithTTL] to override
 // the cache's default TTL for this specific entry.
 func (c *Expirable[K, V]) GetOrSet(key K, compute func() (V, error), opts ...SetOption) (V, error) {
-	if err := validateKey(key); err != nil {
+	if err := c.checkKey(key); err != nil {
 		var zero V
 		return zero, err
 	}
@@ -300,7 +300,7 @@ func (c *Expirable[K, V]) GetOrSet(key K, compute func() (V, error), opts ...Set
 // an in-flight key share the leader's result and the leader's effective TTL; a
 // waiter's [WithTTL] option is not applied.
 func (c *Expirable[K, V]) GetOrSetSingleflight(key K, compute func() (V, error), opts ...SetOption) (V, error) {
-	if err := validateKey(key); err != nil {
+	if err := c.checkKey(key); err != nil {
 		var zero V
 		return zero, err
 	}
@@ -382,7 +382,7 @@ func (c *Expirable[K, V]) GetOrSetSingleflight(key K, compute func() (V, error),
 // the cache's default TTL for this specific entry. Set panics with
 // [ErrInvalidKey] for an invalid key and [ErrInvalidTTL] for an invalid TTL.
 func (c *Expirable[K, V]) Set(key K, value V, opts ...SetOption) {
-	if err := validateKey(key); err != nil {
+	if err := c.checkKey(key); err != nil {
 		panic(err)
 	}
 	opt, err := resolveSetOptions(opts)
@@ -579,7 +579,7 @@ func (c *Expirable[K, V]) removeExpiredLocked(now time.Time, collect bool) []evi
 // Remove deletes an item from the cache by key.
 // It returns whether the key was found and removed.
 func (c *Expirable[K, V]) Remove(key K) bool {
-	if validateKey(key) != nil {
+	if c.checkKey(key) != nil {
 		return false
 	}
 
@@ -733,7 +733,7 @@ func (c *Expirable[K, V]) Clear() {
 // Note: This method does not remove expired entries from the cache.
 // Use [Expirable.RemoveExpired] to explicitly purge expired entries.
 func (c *Expirable[K, V]) Contains(key K) bool {
-	if validateKey(key) != nil {
+	if c.checkKey(key) != nil {
 		return false
 	}
 

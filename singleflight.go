@@ -9,6 +9,9 @@ import (
 type flightGroup[K comparable, V any] struct {
 	mu    sync.Mutex
 	calls map[K]*flightCall[V]
+	// skipKeyCheck is set when K can never produce an invalid key. The zero
+	// value validates, so an uninitialized group stays safe.
+	skipKeyCheck bool
 }
 
 type flightCall[V any] struct {
@@ -24,9 +27,11 @@ type flightCall[V any] struct {
 }
 
 func (g *flightGroup[K, V]) Do(key K, fn func() (V, error)) (V, error) {
-	if err := validateKey(key); err != nil {
-		var zero V
-		return zero, err
+	if !g.skipKeyCheck {
+		if err := validateKey(key); err != nil {
+			var zero V
+			return zero, err
+		}
 	}
 
 	g.mu.Lock()

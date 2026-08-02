@@ -34,7 +34,7 @@ func MustNew[K comparable, V any](capacity int) *Cache[K, V] {
 // This method also updates the item's position in the LRU list.
 func (c *Cache[K, V]) Get(key K) (V, bool) {
 	var zero V
-	if validateKey(key) != nil {
+	if c.checkKey(key) != nil {
 		return zero, false
 	}
 
@@ -58,7 +58,7 @@ func (c *Cache[K, V]) Get(key K) (V, bool) {
 // eviction order. Returns the value and a boolean indicating whether the key was found.
 func (c *Cache[K, V]) Peek(key K) (V, bool) {
 	var zero V
-	if validateKey(key) != nil {
+	if c.checkKey(key) != nil {
 		return zero, false
 	}
 
@@ -81,7 +81,7 @@ func (c *Cache[K, V]) Peek(key K) (V, bool) {
 // returned and the result of compute is discarded. compute must be safe to abandon
 // (no unreclaimed side effects), or use [Cache.GetOrSetSingleflight].
 func (c *Cache[K, V]) GetOrSet(key K, compute func() (V, error)) (V, error) {
-	if err := validateKey(key); err != nil {
+	if err := c.checkKey(key); err != nil {
 		var zero V
 		return zero, err
 	}
@@ -128,7 +128,7 @@ func (c *Cache[K, V]) GetOrSet(key K, compute func() (V, error)) (V, error) {
 // subsequent calls return the cached value without invoking singleflight. compute must not call
 // GetOrSetSingleflight recursively for the same key because it would wait on its own call.
 func (c *Cache[K, V]) GetOrSetSingleflight(key K, compute func() (V, error)) (V, error) {
-	if err := validateKey(key); err != nil {
+	if err := c.checkKey(key); err != nil {
 		var zero V
 		return zero, err
 	}
@@ -183,7 +183,7 @@ func (c *Cache[K, V]) GetOrSetSingleflight(key K, compute func() (V, error)) (V,
 // recently used item is evicted.
 // Set panics with [ErrInvalidKey] if key cannot be represented safely by the cache.
 func (c *Cache[K, V]) Set(key K, value V) {
-	if err := validateKey(key); err != nil {
+	if err := c.checkKey(key); err != nil {
 		panic(err)
 	}
 
@@ -263,7 +263,7 @@ func (c *Cache[K, V]) setLocked(key K, value V) (K, V, bool) {
 // Remove deletes an item from the cache by key.
 // It returns whether the key was found and removed.
 func (c *Cache[K, V]) Remove(key K) bool {
-	if validateKey(key) != nil {
+	if c.checkKey(key) != nil {
 		return false
 	}
 
@@ -359,7 +359,7 @@ func (c *Cache[K, V]) Clear() {
 
 // Contains checks if a key exists in the cache.
 func (c *Cache[K, V]) Contains(key K) bool {
-	if validateKey(key) != nil {
+	if c.checkKey(key) != nil {
 		return false
 	}
 

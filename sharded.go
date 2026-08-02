@@ -30,6 +30,9 @@ type Sharded[K comparable, V any] struct {
 	seed     maphash.Seed
 	mu       sync.RWMutex // protects capacity updates and serializes Resize
 	capacity int          // total capacity across all shards
+	// skipKeyCheck is set when K can never produce an invalid key. The zero
+	// value validates, so an uninitialized cache stays safe.
+	skipKeyCheck bool
 }
 
 // NewSharded creates a new sharded LRU cache with the given total capacity.
@@ -91,9 +94,10 @@ func NewShardedWithCount[K comparable, V any](capacity, shardCount int) (*Sharde
 	}
 
 	return &Sharded[K, V]{
-		shards:   shards,
-		seed:     maphash.MakeSeed(),
-		capacity: capacity,
+		shards:       shards,
+		seed:         maphash.MakeSeed(),
+		capacity:     capacity,
+		skipKeyCheck: !keysNeedValidation[K](),
 	}, nil
 }
 
@@ -113,9 +117,11 @@ func (s *Sharded[K, V]) getShard(key K) *Cache[K, V] {
 	return s.shards[idx]
 }
 
-// shardIndex returns the shard index for the given key.
+// shardIndex returns the shard index for the given key. Invalid keys go to
+// shard 0 rather than to hashKey, which has no defined encoding for them; the
+// shard's own method then rejects the key.
 func (s *Sharded[K, V]) shardIndex(key K) int {
-	if validateKey(key) != nil {
+	if !s.skipKeyCheck && validateKey(key) != nil {
 		return 0
 	}
 	return int(s.hashKey(key) % uint64(len(s.shards)))
