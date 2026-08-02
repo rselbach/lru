@@ -19,7 +19,8 @@ The v1 API remains available at `github.com/rselbach/lru`.
 ## Features
 
 - Generic implementation (Go 1.18+)
-- O(1) lookups, insertions, and deletions in the standard cache
+- O(1) lookups and deletions in every cache type
+- O(1) insertions, amortized in `Expirable` over the occasional expiry scan
 - Expirable writes avoid cleanup scans until the earliest expiry is due
 - Thread-safe for concurrent access
 - Optional time-based expiration (`Expirable`)
