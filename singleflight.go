@@ -66,9 +66,13 @@ func (g *flightGroup[K, V]) Do(key K, fn func() (V, error)) (V, error) {
 		if !normalReturn && !recovered {
 			c.goexited = true
 		}
-		c.wg.Done()
 
+		// Release the waiters and drop the call under a single lock hold.
+		// Signalling first would leave a window where a caller could still
+		// find this call and join a fn that has already returned, contrary to
+		// deduplicating only calls that are genuinely in flight.
 		g.mu.Lock()
+		c.wg.Done()
 		delete(g.calls, key)
 		g.mu.Unlock()
 
