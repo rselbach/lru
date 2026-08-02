@@ -385,8 +385,10 @@ func assertExpirableMatchesModel(t *testing.T, cache *Expirable[int, int], model
 	if hasMin != cache.hasNextExpiry {
 		t.Fatalf("hasNextExpiry: got %t, want %t", cache.hasNextExpiry, hasMin)
 	}
-	if hasMin && !cache.nextExpiry.Equal(minExpiry) {
-		t.Fatalf("nextExpiry: got %v, want %v", cache.nextExpiry, minExpiry)
+	// The watermark only has to be conservative: never later than the earliest
+	// stored expiry, so a due expiry is never missed.
+	if hasMin && cache.nextExpiry.After(minExpiry) {
+		t.Fatalf("nextExpiry %v is later than earliest stored expiry %v", cache.nextExpiry, minExpiry)
 	}
 }
 

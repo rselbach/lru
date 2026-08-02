@@ -781,6 +781,31 @@ func TestExpirable_TracksEarliestExpiry(t *testing.T) {
 	r.False(cache.hasNextExpiry)
 }
 
+// requireConservativeWatermark asserts the invariant the expiry watermark must
+// hold: it is never later than the earliest stored expiry, so a due expiry is
+// never missed. It may be earlier, which only costs a later cleanup scan.
+func requireConservativeWatermark[K comparable, V any](t *testing.T, cache *Expirable[K, V]) {
+	t.Helper()
+	r := require.New(t)
+
+	var earliest time.Time
+	stored := false
+	for e := cache.head; e != nil; e = e.next {
+		if !stored || e.meta.expiry.Before(earliest) {
+			earliest = e.meta.expiry
+			stored = true
+		}
+	}
+
+	r.Equal(stored, cache.hasNextExpiry)
+	if !stored {
+		r.True(cache.nextExpiry.IsZero())
+		return
+	}
+	r.False(cache.nextExpiry.After(earliest),
+		"watermark %v is later than the earliest stored expiry %v", cache.nextExpiry, earliest)
+}
+
 func TestExpirable_NextExpiryAfterSingleRemovals(t *testing.T) {
 	r := require.New(t)
 	mockClock := newMockTime()
@@ -792,18 +817,19 @@ func TestExpirable_NextExpiryAfterSingleRemovals(t *testing.T) {
 	cache.Set("short", 2, WithTTL(30*time.Second))
 	r.Equal(start.Add(30*time.Second), cache.nextExpiry)
 
+	// Removing the earliest entry leaves the watermark behind rather than
+	// rescanning the cache; only the empty case resets it.
 	r.True(cache.Remove("short"))
-	r.True(cache.hasNextExpiry)
-	r.Equal(start.Add(time.Minute), cache.nextExpiry)
+	requireConservativeWatermark(t, cache)
 
 	cache.Set("mid", 3, WithTTL(45*time.Second))
-	r.Equal(start.Add(45*time.Second), cache.nextExpiry)
+	requireConservativeWatermark(t, cache)
 
 	mockClock.Add(46 * time.Second)
 	_, found := cache.Get("mid")
 	r.False(found)
-	r.True(cache.hasNextExpiry)
-	r.Equal(start.Add(time.Minute), cache.nextExpiry)
+	requireConservativeWatermark(t, cache)
+	r.True(cache.Contains("long"))
 
 	r.True(cache.Remove("long"))
 	r.False(cache.hasNextExpiry)
@@ -813,7 +839,6 @@ func TestExpirable_NextExpiryAfterSingleRemovals(t *testing.T) {
 func TestExpirable_NextExpiryAfterRemoveOldest(t *testing.T) {
 	r := require.New(t)
 	mockClock := newMockTime()
-	start := mockClock.Now()
 
 	cache := MustNewExpirable[string, int](3, time.Minute)
 	cache.SetTimeNowFunc(mockClock.Now)
@@ -826,8 +851,8 @@ func TestExpirable_NextExpiryAfterRemoveOldest(t *testing.T) {
 	key, _, found := cache.RemoveOldest()
 	r.True(found)
 	r.Equal("b", key)
-	r.True(cache.hasNextExpiry)
-	r.Equal(start.Add(60*time.Second), cache.nextExpiry)
+	r.Equal([]string{"c"}, cache.Keys())
+	requireConservativeWatermark(t, cache)
 }
 
 func TestExpirable_NextExpiryAfterExtendingEarliest(t *testing.T) {
@@ -841,9 +866,47 @@ func TestExpirable_NextExpiryAfterExtendingEarliest(t *testing.T) {
 	cache.Set("long", 2)
 	r.Equal(start.Add(30*time.Second), cache.nextExpiry)
 
+	// Extending the earliest entry leaves the watermark at the old expiry
+	// instead of rescanning. Both entries must stay live past it.
 	cache.Set("short", 3, WithTTL(2*time.Minute))
-	r.True(cache.hasNextExpiry)
-	r.Equal(start.Add(time.Minute), cache.nextExpiry)
+	requireConservativeWatermark(t, cache)
+
+	mockClock.Add(31 * time.Second)
+	r.True(cache.Contains("short"))
+	r.True(cache.Contains("long"))
+}
+
+func TestExpirable_StaleWatermarkPurgesOnCapacityWrite(t *testing.T) {
+	r := require.New(t)
+	mockClock := newMockTime()
+	start := mockClock.Now()
+
+	cache := MustNewExpirable[string, int](3, time.Minute)
+	cache.SetTimeNowFunc(mockClock.Now)
+
+	evicted := make(map[string]int)
+	cache.OnEvict(func(key string, value int) {
+		evicted[key] = value
+	})
+
+	cache.Set("a", 1, WithTTL(20*time.Second))
+	cache.Set("b", 2, WithTTL(40*time.Second))
+	cache.Set("c", 3, WithTTL(60*time.Second))
+
+	// Removing the earliest entry leaves the watermark at "a"'s expiry even
+	// though the earliest stored expiry is now "b"'s.
+	r.True(cache.Remove("a"))
+	r.Equal(start.Add(20*time.Second), cache.nextExpiry)
+	cache.Set("d", 4, WithTTL(10*time.Minute))
+
+	// The stale watermark must still make the capacity write purge "b" rather
+	// than evict a live entry, and the scan restores an exact watermark.
+	mockClock.Add(41 * time.Second)
+	cache.Set("e", 5, WithTTL(10*time.Minute))
+
+	r.Equal(map[string]int{"a": 1, "b": 2}, evicted)
+	r.ElementsMatch([]string{"e", "d", "c"}, cache.Keys())
+	r.Equal(start.Add(60*time.Second), cache.nextExpiry)
 }
 
 func TestExpirable_ZeroTimeExpiryIsTracked(t *testing.T) {
