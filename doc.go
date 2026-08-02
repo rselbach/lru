@@ -109,6 +109,8 @@
 //     most-recently used, including unpurged expired entries
 //   - [Expirable.RemoveExpired], janitor, and capacity expiry cleanup: yes
 //   - [Expirable.Set] replacing an already-expired entry: yes for the old value
+//   - [Cache.Set] / [Expirable.Set] / [Sharded.Set] replacing a live entry:
+//     no; the previous value is discarded without a callback
 //   - [Cache.Resize] / [Expirable.Resize] / [Sharded.Resize]: yes for live
 //     evictions (Expirable also reports expired entries purged during resize)
 //

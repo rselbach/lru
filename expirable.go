@@ -372,8 +372,9 @@ func (c *Expirable[K, V]) GetOrSetSingleflight(key K, compute func() (V, error),
 }
 
 // Set adds or updates an item in the cache.
-// If the key already exists, its value is updated; if that existing entry had
-// already expired, the eviction callback is invoked for the replaced value.
+// If the key already exists and is still live, its value is updated without
+// invoking the eviction callback for the previous value. If that existing entry
+// had already expired, the eviction callback is invoked for the replaced value.
 // If the cache is at capacity, the least recently used item is evicted.
 // If a new key would exceed capacity, expired entries are removed before
 // evicting a non-expired least recently used entry. Otherwise expired items are

@@ -182,8 +182,9 @@ func (c *Cache[K, V]) GetOrSetSingleflight(key K, compute func() (V, error)) (V,
 }
 
 // Set adds or updates an item in the cache.
-// If the key already exists, its value is updated.
-// If the cache is at capacity, the least recently used item is evicted.
+// If the key already exists, its value is updated without invoking the eviction
+// callback for the previous value. If the cache is at capacity, the least
+// recently used item is evicted.
 // Set panics with [ErrInvalidKey] if key cannot be represented safely by the cache.
 func (c *Cache[K, V]) Set(key K, value V) {
 	if err := validateKey(key); err != nil {
