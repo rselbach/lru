@@ -622,6 +622,22 @@ func BenchmarkComparison_ReadScaling(b *testing.B) {
 		}
 		benchReadParallel(b, size, cache.Get)
 	})
+
+	b.Run("impl=TinyLFU", func(b *testing.B) {
+		cache := MustNewTinyLFU[int, int](2 * size)
+		for i := 0; i < size; i++ {
+			cache.Set(i, i)
+		}
+		benchReadParallel(b, size, cache.Get)
+	})
+
+	b.Run("impl=TinyLFU64", func(b *testing.B) {
+		cache := MustNewTinyLFUWithCount[int, int](2*size, 64)
+		for i := 0; i < size; i++ {
+			cache.Set(i, i)
+		}
+		benchReadParallel(b, size, cache.Get)
+	})
 }
 
 func benchReadParallel(b *testing.B, size int, get func(int) (int, bool)) {
