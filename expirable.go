@@ -705,7 +705,9 @@ func (c *Expirable[K, V]) PhysicalLen() int {
 //
 // If an eviction callback is set, it is called for every stored entry in order
 // from least recently used to most recently used, including entries that have
-// already expired but have not yet been purged.
+// already expired but have not yet been purged. The entries are buffered while
+// the lock is held so the callbacks can run without it, so clearing a large
+// cache with a callback set allocates one key/value pair per entry.
 func (c *Expirable[K, V]) Clear() {
 	c.mu.Lock()
 	onEvict := c.onEvict

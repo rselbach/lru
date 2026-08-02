@@ -336,7 +336,10 @@ func (c *Cache[K, V]) Len() int {
 // Clear removes all items from the cache.
 //
 // If an eviction callback is set, entries are reported in order from least
-// recently used to most recently used, matching [Cache.Resize].
+// recently used to most recently used, matching [Cache.Resize]. They are
+// buffered while the lock is held so the callbacks can run without it, so
+// clearing a large cache with a callback set allocates one key/value pair per
+// entry.
 func (c *Cache[K, V]) Clear() {
 	c.mu.Lock()
 	onEvict := c.onEvict

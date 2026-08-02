@@ -116,6 +116,10 @@
 //
 // Resize and Clear report evicted entries in order from least recently used to
 // most recently used within the cache (or within each shard for [Sharded]).
+// They collect the entries to report while holding the cache lock so the
+// callbacks can run without it, which costs one buffered key/value pair per
+// evicted entry; clearing a large cache with a callback set allocates in
+// proportion to its length.
 //
 // Callbacks run synchronously after the cache's internal lock is released and
 // before the removing method returns. They may be called concurrently from
