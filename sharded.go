@@ -444,6 +444,10 @@ func (s *Sharded[K, V]) Resize(capacity int) (int, error) {
 // removals. Passing nil clears the callback. A removal already in progress may
 // still invoke the callback that was current when that shard released its lock.
 //
+// OnEvict serializes against [Sharded.Resize] and concurrent OnEvict calls, and
+// updates shards one at a time while holding the sharded cache lock, so a swap
+// under load can briefly stall shard operations.
+//
 // The callback runs synchronously after the relevant shard lock is released and
 // before the removing method returns. It may be invoked concurrently from multiple
 // shards and goroutines, so it must be safe for concurrent use.
