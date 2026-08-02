@@ -514,6 +514,17 @@ func TestSharded_EqualKeysHashIdentically(t *testing.T) {
 		r.Equal("value", value)
 	})
 
+	t.Run("signed float32 zero", func(t *testing.T) {
+		cache := MustNewSharded[float32, string](100)
+		negativeZero := float32(math.Copysign(0, -1))
+
+		r.Equal(cache.hashKey(negativeZero), cache.hashKey(0))
+		cache.Set(negativeZero, "value")
+		value, found := cache.Get(0)
+		r.True(found)
+		r.Equal("value", value)
+	})
+
 	t.Run("named signed float zero", func(t *testing.T) {
 		cache := MustNewSharded[namedFloat64, string](100)
 		negativeZero := namedFloat64(math.Copysign(0, -1))
@@ -532,6 +543,73 @@ func TestSharded_EqualKeysHashIdentically(t *testing.T) {
 
 		r.Equal(left, right)
 		r.Equal(cache.hashKey(left), cache.hashKey(right))
+	})
+
+	t.Run("composite signed float32 zero", func(t *testing.T) {
+		type key struct {
+			value float32
+		}
+
+		cache := MustNewSharded[key, string](100)
+		left := key{value: float32(math.Copysign(0, -1))}
+		right := key{value: 0}
+
+		r.Equal(left, right)
+		r.Equal(cache.hashKey(left), cache.hashKey(right))
+	})
+
+	t.Run("complex signed zero", func(t *testing.T) {
+		cache := MustNewSharded[complex128, string](100)
+		left := complex(math.Copysign(0, -1), math.Copysign(0, -1))
+		right := complex(0, 0)
+
+		r.Equal(left, right)
+		r.Equal(cache.hashKey(left), cache.hashKey(right))
+	})
+
+	t.Run("complex64 signed zero", func(t *testing.T) {
+		cache := MustNewSharded[complex64, string](100)
+		left := complex64(complex(math.Copysign(0, -1), 0))
+		var right complex64
+
+		r.Equal(left, right)
+		r.Equal(cache.hashKey(left), cache.hashKey(right))
+	})
+
+	t.Run("array key", func(t *testing.T) {
+		cache := MustNewSharded[[2]string, int](100)
+		left := [2]string{"a", "b"}
+		right := [2]string{"a", "b"}
+
+		r.Equal(cache.hashKey(left), cache.hashKey(right))
+		cache.Set(left, 1)
+		value, found := cache.Get(right)
+		r.True(found)
+		r.Equal(1, value)
+	})
+
+	t.Run("struct with blank field", func(t *testing.T) {
+		type key struct {
+			visible string
+			_       int
+		}
+
+		cache := MustNewSharded[key, string](100)
+		left := key{visible: "same"}
+		right := key{visible: "same"}
+		// blank fields are ignored by Go equality; hashing must match
+		r.Equal(left, right)
+		r.Equal(cache.hashKey(left), cache.hashKey(right))
+	})
+
+	t.Run("bool key", func(t *testing.T) {
+		cache := MustNewSharded[bool, string](100)
+		r.NotEqual(cache.hashKey(true), cache.hashKey(false))
+		cache.Set(true, "yes")
+		cache.Set(false, "no")
+		yes, found := cache.Get(true)
+		r.True(found)
+		r.Equal("yes", yes)
 	})
 
 	t.Run("mutable pointer", func(t *testing.T) {
