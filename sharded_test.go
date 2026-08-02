@@ -3,6 +3,7 @@ package lru
 import (
 	"fmt"
 	"math"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1260,5 +1261,126 @@ func TestSharded_GetOrSetSingleflight_Concurrent(t *testing.T) {
 	for i, result := range results {
 		r.NoError(errs[i], "goroutine %d", i)
 		r.Equal(42, result, "goroutine %d got wrong result", i)
+	}
+}
+
+// zipfHitRate replays a fixed Zipf-skewed key stream against a cache, filling
+// on miss, and returns the hit rate as a percentage.
+func zipfHitRate(get func(int) (int, bool), set func(int, int), ops, universe int) float64 {
+	zipf := rand.NewZipf(rand.New(rand.NewSource(42)), 1.2, 1, uint64(universe-1))
+	hits := 0
+	for i := 0; i < ops; i++ {
+		key := int(zipf.Uint64())
+		if _, found := get(key); found {
+			hits++
+			continue
+		}
+		set(key, key)
+	}
+	return 100 * float64(hits) / float64(ops)
+}
+
+// Sharding replaces one global LRU with independent per-shard LRUs, so a shard
+// that draws more than its share of hot keys evicts entries a global LRU would
+// have kept. That fragmentation must stay negligible at the default shard
+// count, where each shard still holds a useful number of entries.
+func TestSharded_HitRateMatchesGlobalLRU(t *testing.T) {
+	const (
+		capacity = 1000
+		universe = 10000
+		ops      = 500_000
+		// Shard assignment depends on a per-process random hash seed, so allow
+		// for run-to-run drift on top of the fragmentation itself.
+		tolerance = 1.0
+	)
+
+	r := require.New(t)
+
+	plain := MustNew[int, int](capacity)
+	global := zipfHitRate(plain.Get, plain.Set, ops, universe)
+	t.Logf("global LRU:            %.2f%% hit rate", global)
+
+	for _, shards := range []int{4, DefaultShardCount, 64} {
+		cache := MustNewShardedWithCount[int, int](capacity, shards)
+		got := zipfHitRate(cache.Get, cache.Set, ops, universe)
+		t.Logf("sharded shards=%-3d     %.2f%% hit rate (%+.2f)", shards, got, got-global)
+		r.InDelta(global, got, tolerance,
+			"shards=%d fragmented the working set more than expected", shards)
+	}
+}
+
+// BenchmarkSharded_ShardCount measures how throughput responds to shard count
+// under parallel load, which is the knob DefaultShardCount picks a value for.
+func BenchmarkSharded_ShardCount(b *testing.B) {
+	const size = 10000
+
+	for _, shards := range []int{1, 4, 8, DefaultShardCount, 32, 64, 128} {
+		b.Run(fmt.Sprintf("shards=%d", shards), func(b *testing.B) {
+			cache := MustNewShardedWithCount[int, int](2*size, shards)
+			for i := 0; i < size; i++ {
+				cache.Set(i, i)
+			}
+
+			b.ResetTimer()
+			b.ReportAllocs()
+
+			b.RunParallel(func(pb *testing.PB) {
+				i := 0
+				for pb.Next() {
+					key := i % size
+					if i%10 == 0 {
+						cache.Set(key, i)
+					} else {
+						cache.Get(key)
+					}
+					i++
+				}
+			})
+		})
+	}
+}
+
+// BenchmarkComparison_SkewedKeys contrasts the spread sharding is designed for
+// with a single dominant key, where every operation lands on one shard and the
+// hashing is pure overhead.
+func BenchmarkComparison_SkewedKeys(b *testing.B) {
+	const size = 10000
+
+	for _, hotKeys := range []int{size, 10, 1} {
+		b.Run(fmt.Sprintf("hot=%d/Cache", hotKeys), func(b *testing.B) {
+			cache := MustNew[int, int](2 * size)
+			for i := 0; i < size; i++ {
+				cache.Set(i, i)
+			}
+
+			b.ResetTimer()
+			b.ReportAllocs()
+
+			b.RunParallel(func(pb *testing.PB) {
+				i := 0
+				for pb.Next() {
+					cache.Get(i % hotKeys)
+					i++
+				}
+			})
+		})
+
+		b.Run(fmt.Sprintf("hot=%d/Sharded", hotKeys), func(b *testing.B) {
+			cache := MustNewSharded[int, int](2 * size)
+			for i := 0; i < size; i++ {
+				cache.Set(i, i)
+			}
+
+			b.ResetTimer()
+			b.ReportAllocs()
+
+			b.RunParallel(func(pb *testing.PB) {
+				i := 0
+				for pb.Next() {
+					cache.Get(i % hotKeys)
+					i++
+				}
+			})
+		})
 	}
 }
