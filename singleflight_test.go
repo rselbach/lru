@@ -23,7 +23,7 @@ func waitForFlightWaiters[K comparable, V any](
 		call := group.calls[key]
 		got := 0
 		if call != nil {
-			got = call.waiters
+			got = call.waiting
 		}
 		group.mu.Unlock()
 		if got == want {
