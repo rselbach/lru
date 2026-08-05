@@ -29,6 +29,7 @@ The v1 API remains available at `github.com/rselbach/lru`.
 - Approximate-LRU cache whose reads scale with cores (`Clock`)
 - W-TinyLFU admission cache that resists scans and loops (`TinyLFU`)
 - `GetOrSet` / `GetOrSetSingleflight` memoization
+- Error-returning `SetErr` for dynamically validated keys and TTL overrides
 - `OnEvict` compatibility callbacks, reason-bearing `OnRemove`, and `Resize` on every cache type
 - Consistent key/value pair capture with `Items`
 - Oldest-entry helpers on non-sharded caches

@@ -219,10 +219,19 @@ func (c *Cache[K, V]) getOrSetSingleflight(
 // If the key already exists, its value is updated without invoking the eviction
 // callback for the previous value. If the cache is at capacity, the least
 // recently used item is evicted.
-// Set panics with [ErrInvalidKey] if key cannot be represented safely by the cache.
+// Set panics with [ErrInvalidKey] if key cannot be represented safely by the
+// cache. Use [Cache.SetErr] to receive that error instead.
 func (c *Cache[K, V]) Set(key K, value V) {
-	if err := c.checkKey(key); err != nil {
+	if err := c.SetErr(key, value); err != nil {
 		panic(err)
+	}
+}
+
+// SetErr adds or updates an item like [Cache.Set], returning [ErrInvalidKey]
+// instead of panicking if key cannot be represented safely by the cache.
+func (c *Cache[K, V]) SetErr(key K, value V) error {
+	if err := c.checkKey(key); err != nil {
+		return err
 	}
 
 	var evictedKey K
@@ -238,6 +247,7 @@ func (c *Cache[K, V]) Set(key K, value V) {
 	if hasEvicted {
 		invokeCallbacks(onEvict, onRemove, evictedKey, evictedVal, RemovalReasonCapacity)
 	}
+	return nil
 }
 
 // Resize changes the maximum capacity of the cache.

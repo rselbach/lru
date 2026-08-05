@@ -1,6 +1,7 @@
 package lru_test
 
 import (
+	"errors"
 	"fmt"
 	"math"
 
@@ -37,6 +38,15 @@ func Example_basic() {
 	// Value for 'two': 2
 	// Is 'one' in the cache? false
 	// Cache keys: [four two three]
+}
+
+func ExampleCache_SetErr() {
+	cache := lru.MustNew[float64, string](10)
+	err := cache.SetErr(math.NaN(), "not cacheable")
+	fmt.Println(errors.Is(err, lru.ErrInvalidKey))
+
+	// Output:
+	// true
 }
 
 // This example demonstrates using GetOrSet for memoizing expensive computations.

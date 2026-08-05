@@ -184,9 +184,18 @@ func (s *Sharded[K, V]) GetOrSetSingleflightContext(
 // If the key already exists, its value is updated without invoking the eviction
 // callback for the previous value. If the shard is at capacity, the least
 // recently used item in that shard is evicted.
-// Set panics with [ErrInvalidKey] if key cannot be represented safely by the cache.
+// Set panics with [ErrInvalidKey] if key cannot be represented safely by the
+// cache. Use [Sharded.SetErr] to receive that error instead.
 func (s *Sharded[K, V]) Set(key K, value V) {
-	s.getShard(key).Set(key, value)
+	if err := s.SetErr(key, value); err != nil {
+		panic(err)
+	}
+}
+
+// SetErr adds or updates an item like [Sharded.Set], returning [ErrInvalidKey]
+// instead of panicking if key cannot be represented safely by the cache.
+func (s *Sharded[K, V]) SetErr(key K, value V) error {
+	return s.getShard(key).SetErr(key, value)
 }
 
 // Remove deletes an item from the cache by key.

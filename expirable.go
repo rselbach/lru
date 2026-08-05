@@ -54,7 +54,8 @@ type SetOption func(*setOptions)
 
 // WithTTL sets a custom TTL for the entry being set, overriding the cache's
 // default TTL. The TTL must be greater than zero. [Expirable.Set] panics with
-// [ErrInvalidTTL] for an invalid override; GetOrSet methods return the error.
+// [ErrInvalidTTL] for an invalid override; SetErr and GetOrSet methods return
+// the error.
 func WithTTL(ttl time.Duration) SetOption {
 	return func(o *setOptions) {
 		o.ttl = ttl
@@ -421,14 +422,23 @@ func (c *Expirable[K, V]) getOrSetSingleflight(
 //
 // Options can be passed to customize the entry, such as [WithTTL] to override
 // the cache's default TTL for this specific entry. Set panics with
-// [ErrInvalidKey] for an invalid key and [ErrInvalidTTL] for an invalid TTL.
+// [ErrInvalidKey] for an invalid key and [ErrInvalidTTL] for an invalid TTL. Use
+// [Expirable.SetErr] to receive those errors instead.
 func (c *Expirable[K, V]) Set(key K, value V, opts ...SetOption) {
-	if err := c.checkKey(key); err != nil {
+	if err := c.SetErr(key, value, opts...); err != nil {
 		panic(err)
+	}
+}
+
+// SetErr adds or updates an item like [Expirable.Set], returning
+// [ErrInvalidKey] or [ErrInvalidTTL] instead of panicking.
+func (c *Expirable[K, V]) SetErr(key K, value V, opts ...SetOption) error {
+	if err := c.checkKey(key); err != nil {
+		return err
 	}
 	opt, err := resolveSetOptions(opts)
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	c.mu.Lock()
@@ -440,6 +450,7 @@ func (c *Expirable[K, V]) Set(key K, value V, opts ...SetOption) {
 	for _, e := range evicted {
 		invokeCallbacks(onEvict, onRemove, e.key, e.val, e.reason)
 	}
+	return nil
 }
 
 // Resize changes the maximum capacity of the cache.

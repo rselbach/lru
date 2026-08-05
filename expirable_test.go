@@ -1537,12 +1537,15 @@ func TestExpirable_WithTTL_RejectsNonPositiveValues(t *testing.T) {
 			cache := MustNewExpirable[string, int](5, time.Minute)
 			cache.Set("existing", 1)
 
+			err := cache.SetErr("new", 42, WithTTL(tc.ttl))
+			r.ErrorIs(err, ErrInvalidTTL)
+
 			r.PanicsWithValue(ErrInvalidTTL, func() {
 				cache.Set("new", 42, WithTTL(tc.ttl))
 			})
 
 			computed := false
-			_, err := cache.GetOrSet("existing", func() (int, error) {
+			_, err = cache.GetOrSet("existing", func() (int, error) {
 				computed = true
 				return 42, nil
 			}, WithTTL(tc.ttl))

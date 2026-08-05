@@ -22,8 +22,13 @@
 //
 // Keys must be dynamically comparable and equal to themselves. In particular,
 // floating-point NaN values and composites containing NaN cannot be stored.
-// Set methods panic with [ErrInvalidKey], GetOrSet methods return it, and lookup
-// and removal methods treat invalid keys as misses.
+// Set methods panic with [ErrInvalidKey], SetErr and GetOrSet methods return it,
+// and lookup and removal methods treat invalid keys as misses.
+// Use SetErr when keys come from dynamically typed or otherwise untrusted input:
+//
+//	if err := cache.SetErr(key, value); err != nil {
+//	    // handle ErrInvalidKey
+//	}
 //
 // # Memoization with GetOrSet
 //

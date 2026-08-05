@@ -209,11 +209,20 @@ func (c *Clock[K, V]) Contains(key K) bool {
 // If the key already exists, its value is updated without invoking the eviction
 // callback for the previous value. If the shard is full, an entry that has not
 // been referenced since the hand last passed it is evicted.
-// Set panics with [ErrInvalidKey] if key cannot be represented safely.
+// Set panics with [ErrInvalidKey] if key cannot be represented safely. Use
+// [Clock.SetErr] to receive that error instead.
 func (c *Clock[K, V]) Set(key K, value V) {
+	if err := c.SetErr(key, value); err != nil {
+		panic(err)
+	}
+}
+
+// SetErr adds or updates an item like [Clock.Set], returning [ErrInvalidKey]
+// instead of panicking if key cannot be represented safely by the cache.
+func (c *Clock[K, V]) SetErr(key K, value V) error {
 	if !c.hasher.skipKeyCheck {
 		if err := validateKey(key); err != nil {
-			panic(err)
+			return err
 		}
 	}
 
@@ -227,6 +236,7 @@ func (c *Clock[K, V]) Set(key K, value V) {
 	if evicted {
 		invokeCallbacks(onEvict, onRemove, evictedKey, evictedVal, RemovalReasonCapacity)
 	}
+	return nil
 }
 
 // setLocked inserts or updates key. Caller must hold s.mu.

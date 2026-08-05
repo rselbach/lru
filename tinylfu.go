@@ -431,11 +431,20 @@ func (c *TinyLFU[K, V]) Contains(key K) bool {
 // policy protecting the working set, not a bug; code that stores a value and
 // relies on reading that same key back immediately should use a cache type
 // without an admission policy, such as [Clock] or [Cache].
-// Set panics with [ErrInvalidKey] if key cannot be represented safely.
+// Set panics with [ErrInvalidKey] if key cannot be represented safely. Use
+// [TinyLFU.SetErr] to receive that error instead.
 func (c *TinyLFU[K, V]) Set(key K, value V) {
+	if err := c.SetErr(key, value); err != nil {
+		panic(err)
+	}
+}
+
+// SetErr adds or updates an item like [TinyLFU.Set], returning [ErrInvalidKey]
+// instead of panicking if key cannot be represented safely by the cache.
+func (c *TinyLFU[K, V]) SetErr(key K, value V) error {
 	if !c.hasher.skipKeyCheck {
 		if err := validateKey(key); err != nil {
-			panic(err)
+			return err
 		}
 	}
 
@@ -450,6 +459,7 @@ func (c *TinyLFU[K, V]) Set(key K, value V) {
 	if evicted {
 		invokeCallbacks(onEvict, onRemove, evictedKey, evictedVal, reason)
 	}
+	return nil
 }
 
 // setLocked inserts or updates key and returns the evicted entry, if any.

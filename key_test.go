@@ -202,3 +202,36 @@ func TestSharded_RejectsNonReflexiveKeys(t *testing.T) {
 	})
 	r.ErrorIs(err, ErrInvalidKey)
 }
+
+func TestSetErrReturnsInvalidKeyForEveryCacheType(t *testing.T) {
+	type setErrCache struct {
+		name string
+		set  func(float64, int) error
+		len  func() int
+	}
+
+	lruCache := MustNew[float64, int](1)
+	expirable := MustNewExpirable[float64, int](1, time.Minute)
+	sharded := MustNewShardedWithCount[float64, int](1, 1)
+	clock := MustNewClockWithCount[float64, int](1, 1)
+	tinyLFU := MustNewTinyLFUWithCount[float64, int](1, 1)
+	tests := []setErrCache{
+		{name: "Cache", set: lruCache.SetErr, len: lruCache.Len},
+		{name: "Expirable", set: func(key float64, value int) error {
+			return expirable.SetErr(key, value)
+		}, len: expirable.PhysicalLen},
+		{name: "Sharded", set: sharded.SetErr, len: sharded.Len},
+		{name: "Clock", set: clock.SetErr, len: clock.Len},
+		{name: "TinyLFU", set: tinyLFU.SetErr, len: tinyLFU.Len},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := require.New(t)
+			r.NoError(tt.set(1, 1))
+			r.Equal(1, tt.len())
+			r.ErrorIs(tt.set(math.NaN(), 2), ErrInvalidKey)
+			r.Equal(1, tt.len())
+		})
+	}
+}
