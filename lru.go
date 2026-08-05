@@ -420,3 +420,26 @@ func (c *Cache[K, V]) appendValuesLocked(values []V) []V {
 	}
 	return values
 }
+
+// Items returns a slice of key/value pairs in order from most recently used to
+// least recently used. Unlike separate calls to [Cache.Keys] and [Cache.Values],
+// each key and value in the result is captured under the same lock hold.
+func (c *Cache[K, V]) Items() []Item[K, V] {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return c.appendItemsLocked(make([]Item[K, V], 0, len(c.items)))
+}
+
+func (c *Cache[K, V]) appendItems(items []Item[K, V]) []Item[K, V] {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.appendItemsLocked(items)
+}
+
+func (c *Cache[K, V]) appendItemsLocked(items []Item[K, V]) []Item[K, V] {
+	for e := c.head; e != nil; e = e.next {
+		items = append(items, Item[K, V]{Key: e.key, Value: e.val})
+	}
+	return items
+}

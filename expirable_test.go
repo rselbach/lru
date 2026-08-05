@@ -1214,6 +1214,24 @@ func TestExpirable_Values(t *testing.T) {
 	r.Equal(3, cap(values))
 }
 
+func TestExpirable_Items(t *testing.T) {
+	r := require.New(t)
+	mockClock := newMockTime()
+	cache := MustNewExpirable[string, int](5, time.Minute)
+	cache.SetTimeNowFunc(mockClock.Now)
+
+	cache.Set("a", 1)
+	cache.Set("b", 2)
+	cache.Set("short", 3, WithTTL(30*time.Second))
+	mockClock.Add(31 * time.Second)
+
+	r.Equal([]Item[string, int]{
+		{Key: "b", Value: 2},
+		{Key: "a", Value: 1},
+	}, cache.Items())
+	r.Equal(3, cache.PhysicalLen(), "Items must not purge expired entries")
+}
+
 func TestExpirable_Peek(t *testing.T) {
 	r := require.New(t)
 	mockClock := newMockTime()

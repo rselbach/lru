@@ -237,6 +237,17 @@ func (s *Sharded[K, V]) Values() []V {
 	return values
 }
 
+// Items returns key/value pairs in most-recently-used to least-recently-used
+// order within each shard, with shards processed in order. Each pair is captured
+// under one shard lock, but the aggregate is not an atomic cache-wide snapshot.
+func (s *Sharded[K, V]) Items() []Item[K, V] {
+	items := make([]Item[K, V], 0, s.Len())
+	for _, shard := range s.shards {
+		items = shard.appendItems(items)
+	}
+	return items
+}
+
 // Capacity returns the maximum total capacity of the cache.
 func (s *Sharded[K, V]) Capacity() int {
 	s.mu.RLock()

@@ -286,6 +286,12 @@ func TestTinyLFU_KeysAndValues(t *testing.T) {
 	// Order is deliberately unspecified.
 	r.ElementsMatch(want, cache.Keys())
 	r.ElementsMatch(wantValues, cache.Values())
+
+	wantItems := make([]Item[int, int], 0, 20)
+	for i := 0; i < 20; i++ {
+		wantItems = append(wantItems, Item[int, int]{Key: i, Value: i * 3})
+	}
+	r.ElementsMatch(wantItems, cache.Items())
 }
 
 func TestTinyLFU_Clear(t *testing.T) {

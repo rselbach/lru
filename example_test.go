@@ -190,6 +190,20 @@ func ExampleCache_Values() {
 	// values: [1 3 2]
 }
 
+func ExampleCache_Items() {
+	cache := lru.MustNew[string, int](3)
+	cache.Set("a", 1)
+	cache.Set("b", 2)
+
+	for _, item := range cache.Items() {
+		fmt.Printf("%s=%d\n", item.Key, item.Value)
+	}
+
+	// Output:
+	// b=2
+	// a=1
+}
+
 func ExampleSharded() {
 	cache, err := lru.NewShardedWithCount[string, int](8, 2)
 	if err != nil {

@@ -691,6 +691,21 @@ func TestCache_Values(t *testing.T) {
 	r.Equal([]int{1, 3, 2}, cache.Values())
 }
 
+func TestCache_Items(t *testing.T) {
+	r := require.New(t)
+	cache := MustNew[string, int](5)
+
+	r.Empty(cache.Items())
+	cache.Set("a", 1)
+	cache.Set("b", 2)
+	cache.Set("c", 3)
+	r.Equal([]Item[string, int]{
+		{Key: "c", Value: 3},
+		{Key: "b", Value: 2},
+		{Key: "a", Value: 1},
+	}, cache.Items())
+}
+
 func TestCache_Peek(t *testing.T) {
 	r := require.New(t)
 	cache := MustNew[string, int](5)

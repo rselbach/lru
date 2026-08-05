@@ -150,6 +150,12 @@ func dynamicallyComparable(value reflect.Value) bool {
 // OnEvictFunc is a function that is called when an entry is evicted from the cache.
 type OnEvictFunc[K comparable, V any] func(key K, value V)
 
+// Item is a key/value pair returned by a cache's Items method.
+type Item[K, V any] struct {
+	Key   K
+	Value V
+}
+
 // evictedItem holds a key/value pair captured for eviction callbacks that run
 // after the cache lock is released, without retaining list pointers.
 type evictedItem[K comparable, V any] struct {

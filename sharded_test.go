@@ -438,6 +438,21 @@ func TestSharded_Values(t *testing.T) {
 	r.ElementsMatch([]int{1, 2, 3}, values)
 }
 
+func TestSharded_Items(t *testing.T) {
+	r := require.New(t)
+	cache := MustNewSharded[string, int](100)
+
+	r.Empty(cache.Items())
+	cache.Set("a", 1)
+	cache.Set("b", 2)
+	cache.Set("c", 3)
+	r.ElementsMatch([]Item[string, int]{
+		{Key: "a", Value: 1},
+		{Key: "b", Value: 2},
+		{Key: "c", Value: 3},
+	}, cache.Items())
+}
+
 func TestSharded_Peek(t *testing.T) {
 	r := require.New(t)
 	cache := MustNewSharded[string, int](100)

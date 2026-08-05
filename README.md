@@ -30,6 +30,7 @@ The v1 API remains available at `github.com/rselbach/lru`.
 - W-TinyLFU admission cache that resists scans and loops (`TinyLFU`)
 - `GetOrSet` / `GetOrSetSingleflight` memoization
 - Eviction callbacks and `Resize` on every cache type
+- Consistent key/value pair capture with `Items`
 - Oldest-entry helpers on non-sharded caches
 
 ## Cache Types

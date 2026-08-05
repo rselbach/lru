@@ -464,6 +464,22 @@ func (c *Clock[K, V]) Values() []V {
 	return values
 }
 
+// Items returns key/value pairs in unspecified order. Each pair is captured
+// under one shard lock, but the aggregate is not an atomic cache-wide snapshot.
+func (c *Clock[K, V]) Items() []Item[K, V] {
+	items := make([]Item[K, V], 0, c.Len())
+	for _, s := range c.shards {
+		s.mu.RLock()
+		for _, e := range s.ring {
+			if e != nil {
+				items = append(items, Item[K, V]{Key: e.key, Value: e.val})
+			}
+		}
+		s.mu.RUnlock()
+	}
+	return items
+}
+
 // Clear removes all items from all shards.
 // Shards are cleared one at a time; the operation is not atomic across shards.
 //

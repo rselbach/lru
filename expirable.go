@@ -790,6 +790,25 @@ func (c *Expirable[K, V]) Values() []V {
 	return values
 }
 
+// Items returns key/value pairs for all non-expired entries, in order from most
+// recently used to least recently used. Unlike separate calls to
+// [Expirable.Keys] and [Expirable.Values], each key and value in the result is
+// captured under the same lock hold and evaluated against the same instant.
+// Expired entries are filtered without being removed.
+func (c *Expirable[K, V]) Items() []Item[K, V] {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	now := c.timeNow()
+	items := make([]Item[K, V], 0, c.liveLenLocked(now))
+	for e := c.head; e != nil; e = e.next {
+		if !expiryElapsed(now, e.meta.expiry) {
+			items = append(items, Item[K, V]{Key: e.key, Value: e.val})
+		}
+	}
+	return items
+}
+
 // TTL returns the time-to-live duration for cache entries.
 func (c *Expirable[K, V]) TTL() time.Duration {
 	c.mu.RLock()

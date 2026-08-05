@@ -722,6 +722,22 @@ func (c *TinyLFU[K, V]) Values() []V {
 	return values
 }
 
+// Items returns key/value pairs in unspecified order. Each pair is captured
+// under one shard lock, but the aggregate is not an atomic cache-wide snapshot.
+func (c *TinyLFU[K, V]) Items() []Item[K, V] {
+	items := make([]Item[K, V], 0, c.Len())
+	var nodes []*tinyNode[K, V]
+	for _, s := range c.shards {
+		s.mu.RLock()
+		nodes = s.appendNodesLocked(nodes[:0])
+		for _, n := range nodes {
+			items = append(items, Item[K, V]{Key: n.key, Value: n.val})
+		}
+		s.mu.RUnlock()
+	}
+	return items
+}
+
 // Clear removes all items from all shards and resets the frequency sketch.
 // Shards are cleared one at a time; the operation is not atomic across shards.
 //
