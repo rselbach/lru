@@ -113,10 +113,11 @@ func (c *Cache[K, V]) GetOrSet(key K, compute func() (V, error)) (V, error) {
 	// add to cache
 	evictedKey, evictedVal, hasEvicted := c.setLocked(key, val)
 	onEvict := c.onEvict
+	onRemove := c.onRemove
 	c.mu.Unlock()
 
-	if hasEvicted && onEvict != nil {
-		onEvict(evictedKey, evictedVal)
+	if hasEvicted {
+		invokeCallbacks(onEvict, onRemove, evictedKey, evictedVal, RemovalReasonCapacity)
 	}
 	return val, nil
 }
@@ -198,10 +199,11 @@ func (c *Cache[K, V]) getOrSetSingleflight(
 
 		evictedKey, evictedVal, hasEvicted := c.setLocked(key, val)
 		onEvict := c.onEvict
+		onRemove := c.onRemove
 		c.mu.Unlock()
 
-		if hasEvicted && onEvict != nil {
-			onEvict(evictedKey, evictedVal)
+		if hasEvicted {
+			invokeCallbacks(onEvict, onRemove, evictedKey, evictedVal, RemovalReasonCapacity)
 		}
 		return val, nil
 	})
@@ -230,10 +232,11 @@ func (c *Cache[K, V]) Set(key K, value V) {
 	c.mu.Lock()
 	evictedKey, evictedVal, hasEvicted = c.setLocked(key, value)
 	onEvict := c.onEvict
+	onRemove := c.onRemove
 	c.mu.Unlock()
 
-	if hasEvicted && onEvict != nil {
-		onEvict(evictedKey, evictedVal)
+	if hasEvicted {
+		invokeCallbacks(onEvict, onRemove, evictedKey, evictedVal, RemovalReasonCapacity)
 	}
 }
 
@@ -248,11 +251,12 @@ func (c *Cache[K, V]) Resize(capacity int) (int, error) {
 
 	c.mu.Lock()
 	onEvict := c.onEvict
-	evicted, evictedCount := c.resizeLocked(capacity, onEvict != nil)
+	onRemove := c.onRemove
+	evicted, evictedCount := c.resizeLocked(capacity, onEvict != nil || onRemove != nil)
 	c.mu.Unlock()
 
 	for _, e := range evicted {
-		onEvict(e.key, e.val)
+		invokeCallbacks(onEvict, onRemove, e.key, e.val, RemovalReasonResize)
 	}
 
 	return evictedCount, nil
@@ -313,13 +317,12 @@ func (c *Cache[K, V]) Remove(key K) bool {
 	evictedKey := e.key
 	evictedVal := e.val
 	onEvict := c.onEvict
+	onRemove := c.onRemove
 
 	c.deleteEntry(e)
 	c.mu.Unlock()
 
-	if onEvict != nil {
-		onEvict(evictedKey, evictedVal)
-	}
+	invokeCallbacks(onEvict, onRemove, evictedKey, evictedVal, RemovalReasonExplicit)
 	return true
 }
 
@@ -351,13 +354,12 @@ func (c *Cache[K, V]) RemoveOldest() (K, V, bool) {
 	key := oldest.key
 	val := oldest.val
 	onEvict := c.onEvict
+	onRemove := c.onRemove
 
 	c.deleteEntry(oldest)
 	c.mu.Unlock()
 
-	if onEvict != nil {
-		onEvict(key, val)
-	}
+	invokeCallbacks(onEvict, onRemove, key, val, RemovalReasonExplicit)
 	return key, val, true
 }
 
@@ -379,9 +381,10 @@ func (c *Cache[K, V]) Len() int {
 func (c *Cache[K, V]) Clear() {
 	c.mu.Lock()
 	onEvict := c.onEvict
+	onRemove := c.onRemove
 
 	var evicted []evictedItem[K, V]
-	if onEvict != nil {
+	if onEvict != nil || onRemove != nil {
 		evicted = make([]evictedItem[K, V], 0, len(c.items))
 		for e := c.tail; e != nil; e = e.prev {
 			evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
@@ -392,7 +395,7 @@ func (c *Cache[K, V]) Clear() {
 	c.mu.Unlock()
 
 	for _, e := range evicted {
-		onEvict(e.key, e.val)
+		invokeCallbacks(onEvict, onRemove, e.key, e.val, RemovalReasonClear)
 	}
 }
 

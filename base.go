@@ -147,8 +147,54 @@ func dynamicallyComparable(value reflect.Value) bool {
 	return true
 }
 
-// OnEvictFunc is a function that is called when an entry is evicted from the cache.
+// RemovalReason describes why an entry left a cache.
+type RemovalReason uint8
+
+const (
+	// RemovalReasonUnknown is the zero value and represents an unspecified cause.
+	RemovalReasonUnknown RemovalReason = iota
+	// RemovalReasonCapacity means the cache or shard exceeded its capacity.
+	RemovalReasonCapacity
+	// RemovalReasonExplicit means Remove or RemoveOldest removed the entry.
+	RemovalReasonExplicit
+	// RemovalReasonExpired means the entry's TTL elapsed.
+	RemovalReasonExpired
+	// RemovalReasonClear means Clear removed the entry.
+	RemovalReasonClear
+	// RemovalReasonResize means shrinking the cache removed the entry.
+	RemovalReasonResize
+	// RemovalReasonAdmission means TinyLFU rejected a candidate entry.
+	RemovalReasonAdmission
+)
+
+// String returns the stable, lowercase name of r. Unknown values return
+// "unknown".
+func (r RemovalReason) String() string {
+	switch r {
+	case RemovalReasonCapacity:
+		return "capacity"
+	case RemovalReasonExplicit:
+		return "explicit"
+	case RemovalReasonExpired:
+		return "expired"
+	case RemovalReasonClear:
+		return "clear"
+	case RemovalReasonResize:
+		return "resize"
+	case RemovalReasonAdmission:
+		return "admission"
+	default:
+		return "unknown"
+	}
+}
+
+// OnEvictFunc is called when an entry leaves the cache. It lacks reason detail;
+// use [OnRemoveFunc] when the cause matters.
 type OnEvictFunc[K comparable, V any] func(key K, value V)
+
+// OnRemoveFunc is called when an entry leaves the cache, with its reason.
+// Callbacks may run concurrently and must be safe for concurrent use.
+type OnRemoveFunc[K comparable, V any] func(key K, value V, reason RemovalReason)
 
 // Item is a key/value pair returned by a cache's Items method.
 type Item[K, V any] struct {
@@ -159,8 +205,9 @@ type Item[K, V any] struct {
 // evictedItem holds a key/value pair captured for eviction callbacks that run
 // after the cache lock is released, without retaining list pointers.
 type evictedItem[K comparable, V any] struct {
-	key K
-	val V
+	key    K
+	val    V
+	reason RemovalReason
 }
 
 // entry is an intrusive doubly-linked list node. M carries type-specific
@@ -181,6 +228,7 @@ type base[K comparable, V any, M any] struct {
 	tail     *entry[K, V, M] // least recently used
 	mu       sync.RWMutex
 	onEvict  OnEvictFunc[K, V]
+	onRemove OnRemoveFunc[K, V]
 	sfGroup  flightGroup[K, V]
 	// skipKeyCheck is set when K can never produce an invalid key. The zero
 	// value validates, so an uninitialized base stays safe.
@@ -301,4 +349,23 @@ func (c *base[K, V, M]) OnEvict(f OnEvictFunc[K, V]) {
 	defer c.mu.Unlock()
 
 	c.onEvict = f
+}
+
+// OnRemove sets the reason-bearing removal callback. Passing nil clears it.
+// It runs synchronously after the cache lock is released. If OnEvict is also
+// set, OnEvict runs first. It may run concurrently from multiple goroutines
+// and must be safe for concurrent use.
+func (c *base[K, V, M]) OnRemove(f OnRemoveFunc[K, V]) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onRemove = f
+}
+
+func invokeCallbacks[K comparable, V any](onEvict OnEvictFunc[K, V], onRemove OnRemoveFunc[K, V], key K, value V, reason RemovalReason) {
+	if onEvict != nil {
+		onEvict(key, value)
+	}
+	if onRemove != nil {
+		onRemove(key, value, reason)
+	}
 }

@@ -53,6 +53,7 @@ type clockShard[K comparable, V any] struct {
 	hand     int
 	capacity int
 	onEvict  OnEvictFunc[K, V]
+	onRemove OnRemoveFunc[K, V]
 	sfGroup  flightGroup[K, V]
 }
 
@@ -219,11 +220,12 @@ func (c *Clock[K, V]) Set(key K, value V) {
 	s := c.getShard(key)
 	s.mu.Lock()
 	onEvict := s.onEvict
+	onRemove := s.onRemove
 	evictedKey, evictedVal, evicted := s.setLocked(key, value)
 	s.mu.Unlock()
 
-	if evicted && onEvict != nil {
-		onEvict(evictedKey, evictedVal)
+	if evicted {
+		invokeCallbacks(onEvict, onRemove, evictedKey, evictedVal, RemovalReasonCapacity)
 	}
 }
 
@@ -301,11 +303,12 @@ func (c *Clock[K, V]) Remove(key K) bool {
 	evictedKey := e.key
 	evictedVal := e.val
 	onEvict := s.onEvict
+	onRemove := s.onRemove
 	s.removeLocked(e)
 	s.mu.Unlock()
 
-	if onEvict != nil {
-		onEvict(evictedKey, evictedVal)
+	if onEvict != nil || onRemove != nil {
+		invokeCallbacks(onEvict, onRemove, evictedKey, evictedVal, RemovalReasonExplicit)
 	}
 	return true
 }
@@ -426,11 +429,12 @@ func (s *clockShard[K, V]) computeAndSet(key K, compute func() (V, error)) (V, e
 	}
 
 	onEvict := s.onEvict
+	onRemove := s.onRemove
 	evictedKey, evictedVal, evicted := s.setLocked(key, val)
 	s.mu.Unlock()
 
-	if evicted && onEvict != nil {
-		onEvict(evictedKey, evictedVal)
+	if evicted {
+		invokeCallbacks(onEvict, onRemove, evictedKey, evictedVal, RemovalReasonCapacity)
 	}
 	return val, nil
 }
@@ -526,9 +530,10 @@ func (c *Clock[K, V]) Clear() {
 	for _, s := range c.shards {
 		s.mu.Lock()
 		onEvict := s.onEvict
+		onRemove := s.onRemove
 
 		var evicted []evictedItem[K, V]
-		if onEvict != nil {
+		if onEvict != nil || onRemove != nil {
 			evicted = make([]evictedItem[K, V], 0, len(s.items))
 			for _, e := range s.ring {
 				if e != nil {
@@ -550,7 +555,7 @@ func (c *Clock[K, V]) Clear() {
 		s.mu.Unlock()
 
 		for _, e := range evicted {
-			onEvict(e.key, e.val)
+			invokeCallbacks(onEvict, onRemove, e.key, e.val, RemovalReasonClear)
 		}
 	}
 }
@@ -588,16 +593,19 @@ func (c *Clock[K, V]) Resize(capacity int) (int, error) {
 
 		s.mu.Lock()
 		onEvict := s.onEvict
-		removed, count := s.resizeLocked(shardCap, onEvict != nil)
+		onRemove := s.onRemove
+		removed, count := s.resizeLocked(shardCap, onEvict != nil || onRemove != nil)
 		s.mu.Unlock()
 
 		evicted += count
-		if onEvict != nil {
+		if onEvict != nil || onRemove != nil {
 			for _, e := range removed {
 				evictions = append(evictions, shardedEviction[K, V]{
-					onEvict: onEvict,
-					key:     e.key,
-					value:   e.val,
+					onEvict:  onEvict,
+					onRemove: onRemove,
+					key:      e.key,
+					value:    e.val,
+					reason:   RemovalReasonResize,
 				})
 			}
 		}
@@ -607,7 +615,7 @@ func (c *Clock[K, V]) Resize(capacity int) (int, error) {
 	c.mu.Unlock()
 
 	for _, eviction := range evictions {
-		eviction.onEvict(eviction.key, eviction.value)
+		invokeCallbacks(eviction.onEvict, eviction.onRemove, eviction.key, eviction.value, eviction.reason)
 	}
 
 	return evicted, nil
@@ -680,6 +688,17 @@ func (c *Clock[K, V]) OnEvict(f OnEvictFunc[K, V]) {
 	for _, s := range c.shards {
 		s.mu.Lock()
 		s.onEvict = f
+		s.mu.Unlock()
+	}
+}
+
+// OnRemove sets the reason-bearing callback on every shard. Passing nil clears it.
+func (c *Clock[K, V]) OnRemove(f OnRemoveFunc[K, V]) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, s := range c.shards {
+		s.mu.Lock()
+		s.onRemove = f
 		s.mu.Unlock()
 	}
 }

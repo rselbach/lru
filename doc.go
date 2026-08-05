@@ -181,30 +181,41 @@
 // TinyLFU spends the difference on the frequency bookkeeping its admission
 // policy needs.
 //
-// # Eviction Callbacks
+// # Removal Callbacks
 //
-// Register a callback to be notified when entries are evicted:
+// Register a callback to be notified when entries leave the cache:
 //
-//	cache.OnEvict(func(key string, value int) {
-//	    fmt.Printf("evicted: %s=%d\n", key, value)
+//	cache.OnRemove(func(key string, value int, reason lru.RemovalReason) {
+//	    fmt.Printf("removed (%s): %s=%d\n", reason, key, value)
 //	})
 //
-// When OnEvict runs:
+// OnEvict is retained for compatibility and reports every entry leaving the
+// cache without identifying why. OnRemove reports the same events with a
+// [RemovalReason]. If both are registered, OnEvict runs first. Passing nil to
+// either registration method clears that callback.
 //
-//   - Capacity eviction: every cache type; for [TinyLFU] this includes a
-//     candidate rejected by the admission test
-//   - Remove on every cache type: yes (Expirable includes already-expired
-//     entries still present in storage)
-//   - [Cache.RemoveOldest] / [Expirable.RemoveOldest]: yes
-//   - Clear on every cache type: every stored entry, least- to most-recently
-//     used for the LRU types, unspecified order for Clock and TinyLFU,
-//     including unpurged expired entries for Expirable
-//   - [Expirable.RemoveExpired], janitor, and capacity expiry cleanup: yes
-//   - [Expirable.Set] replacing an already-expired entry: yes for the old value
-//   - Set replacing a live entry: no; the previous value is discarded without
-//     a callback
-//   - Resize on every cache type: yes for live evictions (Expirable also
-//     reports expired entries purged during resize)
+// Removal reasons are classified as follows:
+//
+//   - [RemovalReasonCapacity]: insertion displaced a resident entry because a
+//     cache or shard was full. A TinyLFU shard whose main area has zero capacity
+//     also uses this reason when its window overflows.
+//   - [RemovalReasonExplicit]: Remove, [Cache.RemoveOldest], or
+//     [Expirable.RemoveOldest] selected the entry. Removing an already-expired
+//     entry by key is still explicit.
+//   - [RemovalReasonExpired]: an expiry-aware operation or the janitor purged
+//     an expired entry, including [Expirable.Set] replacing an expired value.
+//   - [RemovalReasonClear]: Clear removed the entry. Clear reports every stored
+//     entry, including unpurged expired entries in Expirable.
+//   - [RemovalReasonResize]: shrinking a cache displaced a live entry.
+//   - [RemovalReasonAdmission]: TinyLFU rejected the candidate rather than
+//     displacing the resident victim.
+//
+// Callbacks report every stored entry removed by an operation. Clear reports
+// entries least- to most-recently used for the LRU types, in unspecified order
+// for Clock and TinyLFU, and including unpurged expired entries for Expirable.
+// Resize reports live entries evicted by shrinking and, for Expirable, expired
+// entries purged by the operation. Set replacing a live value is an update, not
+// a removal, and does not invoke either callback.
 //
 // Resize and Clear report evicted entries in order from least recently used to
 // most recently used within the cache (or within each shard for [Sharded]);
@@ -219,7 +230,7 @@
 // Callbacks run synchronously after the cache's internal lock is released and
 // before the removing method returns. They may be called concurrently from
 // multiple goroutines, so callback implementations must be safe for concurrent
-// use. Calling OnEvict again replaces the callback for
-// future removals; passing nil clears it. A removal already in progress may use
-// the callback that was current when that removal released the cache lock.
+// use. Calling either registration method again replaces that callback for
+// future removals. A removal already in progress may use the callback that was
+// current when that removal released the cache lock.
 package lru

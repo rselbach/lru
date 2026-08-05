@@ -276,9 +276,11 @@ func (s *Sharded[K, V]) ShardCount() int {
 }
 
 type shardedEviction[K comparable, V any] struct {
-	onEvict OnEvictFunc[K, V]
-	key     K
-	value   V
+	onEvict  OnEvictFunc[K, V]
+	onRemove OnRemoveFunc[K, V]
+	key      K
+	value    V
+	reason   RemovalReason
 }
 
 // Resize changes the maximum total capacity of the cache while preserving the
@@ -309,16 +311,19 @@ func (s *Sharded[K, V]) Resize(capacity int) (int, error) {
 		}
 		shard.mu.Lock()
 		onEvict := shard.onEvict
-		removed, shardEvicted := shard.resizeLocked(shardCap, onEvict != nil)
+		onRemove := shard.onRemove
+		removed, shardEvicted := shard.resizeLocked(shardCap, onEvict != nil || onRemove != nil)
 		shard.mu.Unlock()
 
 		evicted += shardEvicted
-		if onEvict != nil {
+		if onEvict != nil || onRemove != nil {
 			for _, e := range removed {
 				evictions = append(evictions, shardedEviction[K, V]{
-					onEvict: onEvict,
-					key:     e.key,
-					value:   e.val,
+					onEvict:  onEvict,
+					onRemove: onRemove,
+					key:      e.key,
+					value:    e.val,
+					reason:   RemovalReasonResize,
 				})
 			}
 		}
@@ -328,7 +333,7 @@ func (s *Sharded[K, V]) Resize(capacity int) (int, error) {
 	s.mu.Unlock()
 
 	for _, eviction := range evictions {
-		eviction.onEvict(eviction.key, eviction.value)
+		invokeCallbacks(eviction.onEvict, eviction.onRemove, eviction.key, eviction.value, eviction.reason)
 	}
 
 	return evicted, nil
@@ -355,5 +360,15 @@ func (s *Sharded[K, V]) OnEvict(f OnEvictFunc[K, V]) {
 	defer s.mu.Unlock()
 	for _, shard := range s.shards {
 		shard.OnEvict(f)
+	}
+}
+
+// OnRemove sets the reason-bearing callback on every shard. Passing nil clears
+// it. Like OnEvict, it serializes against Resize and callback replacement.
+func (s *Sharded[K, V]) OnRemove(f OnRemoveFunc[K, V]) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, shard := range s.shards {
+		shard.OnRemove(f)
 	}
 }

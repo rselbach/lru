@@ -146,8 +146,9 @@ type tinyShard[K comparable, V any] struct {
 	// so candidate and victim frequencies stay on one scale.
 	tick uint64
 
-	onEvict OnEvictFunc[K, V]
-	sfGroup flightGroup[K, V]
+	onEvict  OnEvictFunc[K, V]
+	onRemove OnRemoveFunc[K, V]
+	sfGroup  flightGroup[K, V]
 
 	// Lossy read buffer. bufTail is advanced by readers with a single CAS
 	// attempt; bufHead is advanced only by drainLocked under the write lock,
@@ -442,17 +443,18 @@ func (c *TinyLFU[K, V]) Set(key K, value V) {
 	s.mu.Lock()
 	s.drainLocked()
 	onEvict := s.onEvict
-	evictedKey, evictedVal, evicted := s.setLocked(key, value, h)
+	onRemove := s.onRemove
+	evictedKey, evictedVal, reason, evicted := s.setLocked(key, value, h)
 	s.mu.Unlock()
 
-	if evicted && onEvict != nil {
-		onEvict(evictedKey, evictedVal)
+	if evicted {
+		invokeCallbacks(onEvict, onRemove, evictedKey, evictedVal, reason)
 	}
 }
 
 // setLocked inserts or updates key and returns the evicted entry, if any.
 // Caller must hold the write lock, with the read buffer already drained.
-func (s *tinyShard[K, V]) setLocked(key K, value V, hash uint64) (K, V, bool) {
+func (s *tinyShard[K, V]) setLocked(key K, value V, hash uint64) (K, V, RemovalReason, bool) {
 	var zeroK K
 	var zeroV V
 
@@ -462,7 +464,7 @@ func (s *tinyShard[K, V]) setLocked(key K, value V, hash uint64) (K, V, bool) {
 			s.sketch.increment(n.hash)
 		}
 		s.onAccessLocked(n)
-		return zeroK, zeroV, false
+		return zeroK, zeroV, RemovalReasonUnknown, false
 	}
 
 	// sampled miss recording keeps candidate frequencies on the same scale as
@@ -476,7 +478,7 @@ func (s *tinyShard[K, V]) setLocked(key K, value V, hash uint64) (K, V, bool) {
 	s.items[key] = n
 	s.window.pushFront(n)
 	if s.window.len <= s.windowCap {
-		return zeroK, zeroV, false
+		return zeroK, zeroV, RemovalReasonUnknown, false
 	}
 	return s.overflowWindowLocked()
 }
@@ -484,7 +486,7 @@ func (s *tinyShard[K, V]) setLocked(key K, value V, hash uint64) (K, V, bool) {
 // overflowWindowLocked moves the window's coldest entry toward the main area,
 // applying the admission test when main is full. It returns the entry evicted
 // from the cache, if any. Caller must hold the write lock.
-func (s *tinyShard[K, V]) overflowWindowLocked() (K, V, bool) {
+func (s *tinyShard[K, V]) overflowWindowLocked() (K, V, RemovalReason, bool) {
 	var zeroK K
 	var zeroV V
 
@@ -493,7 +495,7 @@ func (s *tinyShard[K, V]) overflowWindowLocked() (K, V, bool) {
 
 	if s.probation.len+s.protected.len < s.mainCap {
 		s.moveToProbationLocked(candidate)
-		return zeroK, zeroV, false
+		return zeroK, zeroV, RemovalReasonUnknown, false
 	}
 
 	victim := s.probation.tail
@@ -503,7 +505,8 @@ func (s *tinyShard[K, V]) overflowWindowLocked() (K, V, bool) {
 	if victim == nil {
 		// mainCap is zero: the window is the whole shard, so the candidate
 		// simply leaves.
-		return s.dropLocked(candidate)
+		key, val, ok := s.dropLocked(candidate)
+		return key, val, RemovalReasonCapacity, ok
 	}
 
 	// The admission test: a candidate that is not estimated to be hotter than
@@ -513,9 +516,10 @@ func (s *tinyShard[K, V]) overflowWindowLocked() (K, V, bool) {
 		s.listFor(victim.segment).remove(victim)
 		evictedKey, evictedVal, _ := s.dropLocked(victim)
 		s.moveToProbationLocked(candidate)
-		return evictedKey, evictedVal, true
+		return evictedKey, evictedVal, RemovalReasonCapacity, true
 	}
-	return s.dropLocked(candidate)
+	key, val, ok := s.dropLocked(candidate)
+	return key, val, RemovalReasonAdmission, ok
 }
 
 // moveToProbationLocked places a detached node into probation, resetting its
@@ -553,10 +557,11 @@ func (c *TinyLFU[K, V]) Remove(key K) bool {
 	s.listFor(n.segment).remove(n)
 	evictedKey, evictedVal, _ := s.dropLocked(n)
 	onEvict := s.onEvict
+	onRemove := s.onRemove
 	s.mu.Unlock()
 
-	if onEvict != nil {
-		onEvict(evictedKey, evictedVal)
+	if onEvict != nil || onRemove != nil {
+		invokeCallbacks(onEvict, onRemove, evictedKey, evictedVal, RemovalReasonExplicit)
 	}
 	return true
 }
@@ -673,11 +678,12 @@ func (s *tinyShard[K, V]) computeAndSet(key K, hash uint64, compute func() (V, e
 	}
 
 	onEvict := s.onEvict
-	evictedKey, evictedVal, evicted := s.setLocked(key, val, hash)
+	onRemove := s.onRemove
+	evictedKey, evictedVal, reason, evicted := s.setLocked(key, val, hash)
 	s.mu.Unlock()
 
-	if evicted && onEvict != nil {
-		onEvict(evictedKey, evictedVal)
+	if evicted {
+		invokeCallbacks(onEvict, onRemove, evictedKey, evictedVal, reason)
 	}
 	return val, nil
 }
@@ -784,9 +790,10 @@ func (c *TinyLFU[K, V]) Clear() {
 	for _, s := range c.shards {
 		s.mu.Lock()
 		onEvict := s.onEvict
+		onRemove := s.onRemove
 
 		var evicted []evictedItem[K, V]
-		if onEvict != nil {
+		if onEvict != nil || onRemove != nil {
 			evicted = make([]evictedItem[K, V], 0, len(s.items))
 			for _, n := range s.appendNodesLocked(nil) {
 				evicted = append(evicted, evictedItem[K, V]{key: n.key, val: n.val})
@@ -806,7 +813,7 @@ func (c *TinyLFU[K, V]) Clear() {
 		s.mu.Unlock()
 
 		for _, e := range evicted {
-			onEvict(e.key, e.val)
+			invokeCallbacks(onEvict, onRemove, e.key, e.val, RemovalReasonClear)
 		}
 	}
 }
@@ -853,16 +860,19 @@ func (c *TinyLFU[K, V]) Resize(capacity int) (int, error) {
 		s.mu.Lock()
 		s.drainLocked()
 		onEvict := s.onEvict
-		removed, count := s.resizeLocked(shardCap, onEvict != nil)
+		onRemove := s.onRemove
+		removed, count := s.resizeLocked(shardCap, onEvict != nil || onRemove != nil)
 		s.mu.Unlock()
 
 		evicted += count
-		if onEvict != nil {
+		if onEvict != nil || onRemove != nil {
 			for _, e := range removed {
 				evictions = append(evictions, shardedEviction[K, V]{
-					onEvict: onEvict,
-					key:     e.key,
-					value:   e.val,
+					onEvict:  onEvict,
+					onRemove: onRemove,
+					key:      e.key,
+					value:    e.val,
+					reason:   RemovalReasonResize,
 				})
 			}
 		}
@@ -872,7 +882,7 @@ func (c *TinyLFU[K, V]) Resize(capacity int) (int, error) {
 	c.mu.Unlock()
 
 	for _, eviction := range evictions {
-		eviction.onEvict(eviction.key, eviction.value)
+		invokeCallbacks(eviction.onEvict, eviction.onRemove, eviction.key, eviction.value, eviction.reason)
 	}
 
 	return evicted, nil
@@ -951,6 +961,17 @@ func (c *TinyLFU[K, V]) OnEvict(f OnEvictFunc[K, V]) {
 	for _, s := range c.shards {
 		s.mu.Lock()
 		s.onEvict = f
+		s.mu.Unlock()
+	}
+}
+
+// OnRemove sets the reason-bearing callback on every shard. Passing nil clears it.
+func (c *TinyLFU[K, V]) OnRemove(f OnRemoveFunc[K, V]) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, s := range c.shards {
+		s.mu.Lock()
+		s.onRemove = f
 		s.mu.Unlock()
 	}
 }

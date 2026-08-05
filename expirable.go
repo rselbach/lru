@@ -133,12 +133,13 @@ func (c *Expirable[K, V]) Get(key K) (V, bool) {
 		evictedKey := e.key
 		evictedVal := e.val
 		onEvict := c.onEvict
+		onRemove := c.onRemove
 		c.deleteEntry(e)
 		c.noteRemovedExpiryLocked()
 		c.mu.Unlock()
 
-		if onEvict != nil {
-			onEvict(evictedKey, evictedVal)
+		if onEvict != nil || onRemove != nil {
+			invokeCallbacks(onEvict, onRemove, evictedKey, evictedVal, RemovalReasonExpired)
 		}
 		return zero, false
 	}
@@ -201,12 +202,13 @@ func (c *Expirable[K, V]) GetWithTTL(key K) (V, time.Duration, bool) {
 		evictedKey := e.key
 		evictedVal := e.val
 		onEvict := c.onEvict
+		onRemove := c.onRemove
 		c.deleteEntry(e)
 		c.noteRemovedExpiryLocked()
 		c.mu.Unlock()
 
-		if onEvict != nil {
-			onEvict(evictedKey, evictedVal)
+		if onEvict != nil || onRemove != nil {
+			invokeCallbacks(onEvict, onRemove, evictedKey, evictedVal, RemovalReasonExpired)
 		}
 		return zero, 0, false
 	}
@@ -273,15 +275,16 @@ func (c *Expirable[K, V]) GetOrSet(key K, compute func() (V, error), opts ...Set
 	}
 
 	onEvict := c.onEvict
-	evicted := c.setLocked(key, val, c.resolveTTL(opt), onEvict != nil)
+	onRemove := c.onRemove
+	evicted := c.setLocked(key, val, c.resolveTTL(opt), onEvict != nil || onRemove != nil)
 	c.mu.Unlock()
 
-	if onEvict != nil {
+	if onEvict != nil || onRemove != nil {
 		if expiredEntry != nil {
-			onEvict(expiredEntry.key, expiredEntry.val)
+			invokeCallbacks(onEvict, onRemove, expiredEntry.key, expiredEntry.val, RemovalReasonExpired)
 		}
 		for _, e := range evicted {
-			onEvict(e.key, e.val)
+			invokeCallbacks(onEvict, onRemove, e.key, e.val, e.reason)
 		}
 	}
 	return val, nil
@@ -383,15 +386,16 @@ func (c *Expirable[K, V]) getOrSetSingleflight(
 		}
 
 		onEvict := c.onEvict
-		evicted := c.setLocked(key, val, c.resolveTTL(opt), onEvict != nil)
+		onRemove := c.onRemove
+		evicted := c.setLocked(key, val, c.resolveTTL(opt), onEvict != nil || onRemove != nil)
 		c.mu.Unlock()
 
-		if onEvict != nil {
+		if onEvict != nil || onRemove != nil {
 			if expiredEntry != nil {
-				onEvict(expiredEntry.key, expiredEntry.val)
+				invokeCallbacks(onEvict, onRemove, expiredEntry.key, expiredEntry.val, RemovalReasonExpired)
 			}
 			for _, e := range evicted {
-				onEvict(e.key, e.val)
+				invokeCallbacks(onEvict, onRemove, e.key, e.val, e.reason)
 			}
 		}
 		return val, nil
@@ -429,11 +433,12 @@ func (c *Expirable[K, V]) Set(key K, value V, opts ...SetOption) {
 
 	c.mu.Lock()
 	onEvict := c.onEvict
-	evicted := c.setLocked(key, value, c.resolveTTL(opt), onEvict != nil)
+	onRemove := c.onRemove
+	evicted := c.setLocked(key, value, c.resolveTTL(opt), onEvict != nil || onRemove != nil)
 	c.mu.Unlock()
 
 	for _, e := range evicted {
-		onEvict(e.key, e.val)
+		invokeCallbacks(onEvict, onRemove, e.key, e.val, e.reason)
 	}
 }
 
@@ -449,15 +454,16 @@ func (c *Expirable[K, V]) Resize(capacity int) (int, error) {
 
 	c.mu.Lock()
 	onEvict := c.onEvict
+	onRemove := c.onRemove
 	evicted, liveEvicted := c.resizeExpirableLocked(
 		capacity,
 		c.timeNow(),
-		onEvict != nil,
+		onEvict != nil || onRemove != nil,
 	)
 	c.mu.Unlock()
 
 	for _, e := range evicted {
-		onEvict(e.key, e.val)
+		invokeCallbacks(onEvict, onRemove, e.key, e.val, e.reason)
 	}
 
 	return liveEvicted, nil
@@ -488,8 +494,12 @@ func (c *Expirable[K, V]) resizeExpirableLocked(
 		prev := e.prev
 		expired := expiryElapsed(now, e.meta.expiry)
 		if expired || liveToEvict > 0 {
+			reason := RemovalReasonExpired
+			if !expired {
+				reason = RemovalReasonResize
+			}
 			if collect {
-				evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
+				evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val, reason: reason})
 			}
 			c.deleteEntry(e)
 			if !expired {
@@ -522,7 +532,7 @@ func (c *Expirable[K, V]) setLocked(key K, value V, ttl time.Duration, collectEv
 		// replacing an expired entry retires its dead value, so report it to
 		// the eviction callback like any other expiry removal
 		if collectEvicted && expiryElapsed(now, e.meta.expiry) {
-			evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
+			evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val, reason: RemovalReasonExpired})
 		}
 		c.moveToFront(e)
 		e.val = value
@@ -547,7 +557,7 @@ func (c *Expirable[K, V]) setLocked(key K, value V, ttl time.Duration, collectEv
 		oldest := c.tail
 		if oldest != nil {
 			if collectEvicted {
-				evicted = append(evicted, evictedItem[K, V]{key: oldest.key, val: oldest.val})
+				evicted = append(evicted, evictedItem[K, V]{key: oldest.key, val: oldest.val, reason: RemovalReasonCapacity})
 			}
 			c.deleteEntry(oldest)
 			c.noteRemovedExpiryLocked()
@@ -599,7 +609,7 @@ func (c *Expirable[K, V]) removeExpiredLocked(now time.Time, collect bool) []evi
 		next := e.next
 		if expiryElapsed(now, e.meta.expiry) {
 			if collect {
-				expired = append(expired, evictedItem[K, V]{key: e.key, val: e.val})
+				expired = append(expired, evictedItem[K, V]{key: e.key, val: e.val, reason: RemovalReasonExpired})
 			}
 			c.deleteEntry(e)
 		} else if !hasNextExpiry || e.meta.expiry.Before(nextExpiry) {
@@ -630,13 +640,14 @@ func (c *Expirable[K, V]) Remove(key K) bool {
 	evictedKey := e.key
 	evictedVal := e.val
 	onEvict := c.onEvict
+	onRemove := c.onRemove
 
 	c.deleteEntry(e)
 	c.noteRemovedExpiryLocked()
 	c.mu.Unlock()
 
-	if onEvict != nil {
-		onEvict(evictedKey, evictedVal)
+	if onEvict != nil || onRemove != nil {
+		invokeCallbacks(onEvict, onRemove, evictedKey, evictedVal, RemovalReasonExplicit)
 	}
 	return true
 }
@@ -671,13 +682,14 @@ func (c *Expirable[K, V]) RemoveOldest() (K, V, bool) {
 	found := false
 	now := c.timeNow()
 	onEvict := c.onEvict
+	onRemove := c.onRemove
 	var evicted []evictedItem[K, V]
 
 	for e := c.tail; e != nil; {
 		prev := e.prev
 		if expiryElapsed(now, e.meta.expiry) {
-			if onEvict != nil {
-				evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
+			if onEvict != nil || onRemove != nil {
+				evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val, reason: RemovalReasonExpired})
 			}
 			c.deleteEntry(e)
 			c.noteRemovedExpiryLocked()
@@ -688,8 +700,8 @@ func (c *Expirable[K, V]) RemoveOldest() (K, V, bool) {
 		key = e.key
 		val = e.val
 		found = true
-		if onEvict != nil {
-			evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
+		if onEvict != nil || onRemove != nil {
+			evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val, reason: RemovalReasonExplicit})
 		}
 		c.deleteEntry(e)
 		c.noteRemovedExpiryLocked()
@@ -699,7 +711,7 @@ func (c *Expirable[K, V]) RemoveOldest() (K, V, bool) {
 	c.mu.Unlock()
 
 	for _, e := range evicted {
-		onEvict(e.key, e.val)
+		invokeCallbacks(onEvict, onRemove, e.key, e.val, e.reason)
 	}
 
 	if !found {
@@ -748,12 +760,13 @@ func (c *Expirable[K, V]) PhysicalLen() int {
 func (c *Expirable[K, V]) Clear() {
 	c.mu.Lock()
 	onEvict := c.onEvict
+	onRemove := c.onRemove
 
 	var evicted []evictedItem[K, V]
-	if onEvict != nil {
+	if onEvict != nil || onRemove != nil {
 		evicted = make([]evictedItem[K, V], 0, len(c.items))
 		for e := c.tail; e != nil; e = e.prev {
-			evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val})
+			evicted = append(evicted, evictedItem[K, V]{key: e.key, val: e.val, reason: RemovalReasonClear})
 		}
 	}
 
@@ -763,7 +776,7 @@ func (c *Expirable[K, V]) Clear() {
 	c.mu.Unlock()
 
 	for _, e := range evicted {
-		onEvict(e.key, e.val)
+		invokeCallbacks(onEvict, onRemove, e.key, e.val, e.reason)
 	}
 }
 
@@ -990,6 +1003,9 @@ func (c *Expirable[K, V]) OnEvict(f OnEvictFunc[K, V]) {
 	c.base.OnEvict(f)
 }
 
+// OnRemove sets the reason-bearing removal callback. Passing nil clears it.
+func (c *Expirable[K, V]) OnRemove(f OnRemoveFunc[K, V]) { c.base.OnRemove(f) }
+
 // SetTimeNowFunc replaces the function used to get the current time.
 // This is primarily useful for testing. The function may be called concurrently
 // while a cache lock is held, so it must be concurrency-safe and must not call
@@ -1011,14 +1027,15 @@ func (c *Expirable[K, V]) RemoveExpired() int {
 	c.mu.Lock()
 
 	onEvict := c.onEvict
+	onRemove := c.onRemove
 	before := len(c.items)
-	expired := c.removeExpiredLocked(c.timeNow(), onEvict != nil)
+	expired := c.removeExpiredLocked(c.timeNow(), onEvict != nil || onRemove != nil)
 	removed := before - len(c.items)
 
 	c.mu.Unlock()
 
 	for _, e := range expired {
-		onEvict(e.key, e.val)
+		invokeCallbacks(onEvict, onRemove, e.key, e.val, e.reason)
 	}
 
 	return removed

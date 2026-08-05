@@ -1,6 +1,7 @@
 package lru
 
 import (
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -8,6 +9,133 @@ import (
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestRemovalReasonString(t *testing.T) {
+	want := []string{"unknown", "capacity", "explicit", "expired", "clear", "resize", "admission"}
+	for reason, name := range want {
+		if got := RemovalReason(reason).String(); got != name {
+			t.Fatalf("reason %d: got %q, want %q", reason, got, name)
+		}
+	}
+	if got := RemovalReason(255).String(); got != "unknown" {
+		t.Fatalf("unknown reason = %q", got)
+	}
+}
+
+func TestCacheOnRemoveReasonsAndOrdering(t *testing.T) {
+	cache := MustNew[int, int](2)
+	var reasons []RemovalReason
+	var order []string
+	cache.OnEvict(func(int, int) { order = append(order, "evict") })
+	cache.OnRemove(func(_ int, _ int, reason RemovalReason) {
+		// Reentry proves the callback runs after unlocking.
+		_ = cache.Len()
+		order = append(order, "remove")
+		reasons = append(reasons, reason)
+	})
+	cache.Set(1, 1)
+	cache.Set(2, 2)
+	cache.Set(3, 3)
+	cache.Remove(2)
+	cache.Set(4, 4)
+	cache.Set(5, 5)
+	if _, err := cache.Resize(1); err != nil {
+		t.Fatal(err)
+	}
+	cache.Clear()
+	want := []RemovalReason{RemovalReasonCapacity, RemovalReasonExplicit, RemovalReasonCapacity, RemovalReasonResize, RemovalReasonClear}
+	if !reflect.DeepEqual(reasons, want) {
+		t.Fatalf("reasons = %v, want %v", reasons, want)
+	}
+	for i := 0; i < len(order); i += 2 {
+		if order[i] != "evict" || order[i+1] != "remove" {
+			t.Fatalf("callback order = %v", order)
+		}
+	}
+	cache.OnRemove(nil)
+}
+
+func TestTinyLFUOnRemoveAdmissionAndCapacity(t *testing.T) {
+	admission := MustNewTinyLFUWithCount[int, int](2, 1)
+	var got []RemovalReason
+	admission.OnRemove(func(_, _ int, reason RemovalReason) { got = append(got, reason) })
+	admission.Set(1, 1)
+	admission.Set(2, 2)
+	admission.Set(3, 3) // equal-frequency candidate 2 is rejected
+	if !reflect.DeepEqual(got, []RemovalReason{RemovalReasonAdmission}) {
+		t.Fatalf("admission = %v", got)
+	}
+
+	displacement := MustNewTinyLFUWithCount[int, int](2, 1)
+	got = nil
+	displacement.OnRemove(func(_, _ int, reason RemovalReason) { got = append(got, reason) })
+	displacement.Set(1, 1)
+	displacement.Set(2, 2)
+	_, hash := displacement.shardFor(2)
+	displacement.shards[0].sketch.increment(hash)
+	displacement.Set(3, 3)
+	if !reflect.DeepEqual(got, []RemovalReason{RemovalReasonCapacity}) {
+		t.Fatalf("displacement = %v", got)
+	}
+}
+
+func TestExpirableOnRemoveExpired(t *testing.T) {
+	now := time.Unix(1, 0)
+	cache := MustNewExpirable[int, int](1, time.Second)
+	cache.SetTimeNowFunc(func() time.Time { return now })
+	var got RemovalReason
+	cache.OnRemove(func(_, _ int, reason RemovalReason) { got = reason })
+	cache.Set(1, 1)
+	now = now.Add(2 * time.Second)
+	cache.Get(1)
+	if got != RemovalReasonExpired {
+		t.Fatalf("reason = %v", got)
+	}
+}
+
+func TestOnRemoveSupportedByEveryCacheType(t *testing.T) {
+	type callbackCache struct {
+		name     string
+		set      func(int, int)
+		remove   func(int) bool
+		onRemove func(OnRemoveFunc[int, int])
+	}
+	var tests []callbackCache
+	lruCache := MustNew[int, int](1)
+	tests = append(tests, callbackCache{"Cache", lruCache.Set, lruCache.Remove, lruCache.OnRemove})
+	expirable := MustNewExpirable[int, int](1, time.Hour)
+	tests = append(tests, callbackCache{"Expirable", func(key, value int) { expirable.Set(key, value) }, expirable.Remove, expirable.OnRemove})
+	sharded := MustNewShardedWithCount[int, int](1, 1)
+	tests = append(tests, callbackCache{"Sharded", sharded.Set, sharded.Remove, sharded.OnRemove})
+	clock := MustNewClockWithCount[int, int](1, 1)
+	tests = append(tests, callbackCache{"Clock", clock.Set, clock.Remove, clock.OnRemove})
+	tinyLFU := MustNewTinyLFUWithCount[int, int](1, 1)
+	tests = append(tests, callbackCache{"TinyLFU", tinyLFU.Set, tinyLFU.Remove, tinyLFU.OnRemove})
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got []RemovalReason
+			tt.onRemove(func(_, _ int, reason RemovalReason) {
+				got = append(got, reason)
+			})
+			tt.set(1, 1)
+			tt.set(2, 2)
+			if !tt.remove(2) {
+				t.Fatal("Remove(2) = false")
+			}
+			if want := []RemovalReason{RemovalReasonCapacity, RemovalReasonExplicit}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("reasons = %v, want %v", got, want)
+			}
+
+			tt.onRemove(nil)
+			tt.set(3, 3)
+			tt.set(4, 4)
+			if !reflect.DeepEqual(got, []RemovalReason{RemovalReasonCapacity, RemovalReasonExplicit}) {
+				t.Fatalf("nil did not clear callback: %v", got)
+			}
+		})
+	}
+}
 
 func TestCache_OnEvict(t *testing.T) {
 	r := require.New(t)
