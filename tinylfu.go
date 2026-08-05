@@ -185,7 +185,9 @@ func MustNewTinyLFU[K comparable, V any](capacity int) *TinyLFU[K, V] {
 //
 // Within each shard roughly 1% of the capacity (at least one slot) forms the
 // admission window and the rest the main area, of which 80% is the protected
-// segment, following the W-TinyLFU paper's defaults.
+// segment, following the W-TinyLFU paper's defaults. It returns
+// [ErrCapacityTooLarge] if the per-shard capacity cannot be represented safely
+// by the frequency sketch.
 func NewTinyLFUWithCount[K comparable, V any](capacity, shardCount int) (*TinyLFU[K, V], error) {
 	if capacity <= 0 {
 		return nil, ErrInvalidCapacity
@@ -199,6 +201,13 @@ func NewTinyLFUWithCount[K comparable, V any](capacity, shardCount int) (*TinyLF
 
 	perShard := capacity / shardCount
 	remainder := capacity % shardCount
+	largestShard := perShard
+	if remainder > 0 {
+		largestShard++
+	}
+	if !validFrequencySketchCapacity(largestShard) {
+		return nil, ErrCapacityTooLarge
+	}
 
 	shards := make([]*tinyShard[K, V], shardCount)
 	skipKeyCheck := !keysNeedValidation[K]()
@@ -759,7 +768,8 @@ func (c *TinyLFU[K, V]) Clear() {
 //
 // Shrinking evicts entries the policy ranks lowest, in unspecified order, and
 // reports them to the eviction callback. It returns the number of entries
-// evicted.
+// evicted. Resize returns [ErrCapacityTooLarge] if the resulting per-shard
+// capacity cannot be represented safely by the frequency sketch.
 func (c *TinyLFU[K, V]) Resize(capacity int) (int, error) {
 	if capacity <= 0 {
 		return 0, ErrInvalidCapacity
@@ -768,6 +778,13 @@ func (c *TinyLFU[K, V]) Resize(capacity int) (int, error) {
 	shardCount := len(c.shards)
 	if capacity < shardCount {
 		return 0, wrapCapacityBelowShardCount(shardCount)
+	}
+	largestShard := capacity / shardCount
+	if capacity%shardCount > 0 {
+		largestShard++
+	}
+	if !validFrequencySketchCapacity(largestShard) {
+		return 0, ErrCapacityTooLarge
 	}
 
 	c.mu.Lock()

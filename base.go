@@ -15,6 +15,10 @@ var (
 	// ErrInvalidCapacity is returned when a cache capacity is zero or negative.
 	ErrInvalidCapacity = errors.New("lru: capacity must be greater than zero")
 
+	// ErrCapacityTooLarge is returned when a cache capacity cannot be represented
+	// safely by the selected eviction policy's internal data structures.
+	ErrCapacityTooLarge = errors.New("lru: capacity is too large")
+
 	// ErrInvalidShardCount is returned when a shard count is zero or negative.
 	ErrInvalidShardCount = errors.New("lru: shard count must be greater than zero")
 

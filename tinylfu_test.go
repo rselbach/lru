@@ -28,6 +28,11 @@ func TestTinyLFU_New(t *testing.T) {
 		"shards above capacity":  {capacity: 4, shardCount: 8, wantErr: ErrShardCountExceedsCapacity},
 		"shards equal capacity":  {capacity: 8, shardCount: 8, wantShards: 8},
 		"single shard requested": {capacity: 100, shardCount: 1, wantShards: 1},
+		"capacity too large": {
+			capacity:   int(^uint(0)>>1)/10 + 1,
+			shardCount: 1,
+			wantErr:    ErrCapacityTooLarge,
+		},
 	}
 
 	for name, tc := range tests {
@@ -355,6 +360,8 @@ func TestTinyLFU_Resize(t *testing.T) {
 		r.ErrorIs(err, ErrInvalidCapacity)
 		_, err = cache.Resize(3)
 		r.ErrorIs(err, ErrCapacityBelowShardCount)
+		_, err = cache.Resize(int(^uint(0)>>1)/10*4 + 1)
+		r.ErrorIs(err, ErrCapacityTooLarge)
 		r.Equal(16, cache.Capacity())
 	})
 

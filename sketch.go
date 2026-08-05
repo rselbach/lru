@@ -22,12 +22,18 @@ type frequencySketch struct {
 	size       int
 }
 
+func validFrequencySketchCapacity(capacity int) bool {
+	// sampleSize is ten times capacity, and checking that multiplication also
+	// keeps the next power-of-two table size representable as a positive int.
+	return capacity > 0 && capacity <= int(^uint(0)>>1)/10
+}
+
 // newFrequencySketch sizes a sketch for a cache with the given capacity.
 func newFrequencySketch(capacity int) *frequencySketch {
-	size := 1
-	for size < capacity {
-		size <<= 1
+	if !validFrequencySketchCapacity(capacity) {
+		panic(ErrCapacityTooLarge)
 	}
+	size := 1 << bits.Len(uint(capacity-1))
 	return &frequencySketch{
 		table:      make([]uint64, size),
 		mask:       uint64(size - 1),

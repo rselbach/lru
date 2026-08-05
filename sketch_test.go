@@ -28,6 +28,12 @@ func TestFrequencySketch_TableSizing(t *testing.T) {
 	}
 }
 
+func TestFrequencySketch_RejectsUnrepresentableCapacity(t *testing.T) {
+	require.PanicsWithValue(t, ErrCapacityTooLarge, func() {
+		newFrequencySketch(int(^uint(0)>>1)/10 + 1)
+	})
+}
+
 func TestFrequencySketch_IncrementAndFrequency(t *testing.T) {
 	r := require.New(t)
 	s := newFrequencySketch(64)
