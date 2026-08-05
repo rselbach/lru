@@ -3,11 +3,49 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - 'v2.*'
 
 jobs:
+  validate-tag:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: 'stable'
+
+      - name: Validate semantic version and module major
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v2\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "release tag must be a v2 semantic version (for example, v2.3.1 or v2.3.1-rc.1)" >&2
+            exit 1
+          fi
+
+          version_without_build="${GITHUB_REF_NAME%%+*}"
+          if [[ "$version_without_build" == *-* ]]; then
+            prerelease="${version_without_build#*-}"
+            IFS='.' read -ra identifiers <<< "$prerelease"
+            for identifier in "${identifiers[@]}"; do
+              if [[ "$identifier" =~ ^[0-9]+$ && "$identifier" != 0 && "$identifier" == 0* ]]; then
+                echo "numeric prerelease identifiers must not contain leading zeroes" >&2
+                exit 1
+              fi
+            done
+          fi
+
+          module_path="$(go list -m -f '{{.Path}}')"
+          if [[ "$module_path" != */v2 ]]; then
+            echo "release tag major v2 does not match module path $module_path" >&2
+            exit 1
+          fi
+
   compatibility:
     name: Test Go ${{ matrix.go-version }}
+    needs: validate-tag
     runs-on: ubuntu-latest
     strategy:
       matrix:
