@@ -816,6 +816,12 @@ func (c *TinyLFU[K, V]) Resize(capacity int) (int, error) {
 // count, tracked separately so the count stays right without a callback.
 // Caller must hold the write lock.
 func (s *tinyShard[K, V]) resizeLocked(shardCap int, collect bool) ([]evictedItem[K, V], int) {
+	if shardCap != s.capacity() {
+		// The sketch's table and aging threshold are both derived from capacity.
+		// Rebuild it rather than carrying collision rates and decay timing tuned
+		// for a different-sized cache. Packed counters cannot be rehashed exactly.
+		s.sketch = newFrequencySketch(shardCap)
+	}
 	s.setCapsLocked(shardCap)
 
 	for s.protected.len > s.protectedCap {

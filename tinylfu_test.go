@@ -411,6 +411,30 @@ func TestTinyLFU_Resize(t *testing.T) {
 		r.Greater(cache.Len(), before, "the grown capacity must be usable")
 		requireTinyLFUInvariants(t, cache)
 	})
+
+	t.Run("rebuilds sketch for new capacity", func(t *testing.T) {
+		cache := MustNewTinyLFUWithCount[int, int](16, 1)
+		oldSketch := cache.shards[0].sketch
+		hash := cache.hasher.hash(1)
+		oldSketch.increment(hash)
+		r.Equal(1, oldSketch.frequency(hash))
+
+		evicted, err := cache.Resize(64)
+		r.NoError(err)
+		r.Zero(evicted)
+		r.NotSame(oldSketch, cache.shards[0].sketch)
+		r.Len(cache.shards[0].sketch.table, 64)
+		r.Equal(640, cache.shards[0].sketch.sampleSize)
+		r.Zero(cache.shards[0].sketch.frequency(hash), "resize resets stale frequency history")
+
+		grownSketch := cache.shards[0].sketch
+		evicted, err = cache.Resize(8)
+		r.NoError(err)
+		r.Zero(evicted)
+		r.NotSame(grownSketch, cache.shards[0].sketch)
+		r.Len(cache.shards[0].sketch.table, 8)
+		r.Equal(80, cache.shards[0].sketch.sampleSize)
+	})
 }
 
 func TestTinyLFU_GetOrSet(t *testing.T) {
