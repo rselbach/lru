@@ -2,6 +2,7 @@ package lru
 
 import (
 	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -179,6 +180,309 @@ func FuzzCacheOperations(f *testing.F) {
 			}
 			assertCacheMatchesModel(t, cache, model)
 		}
+	})
+}
+
+type policyFuzzCache interface {
+	Set(int, int)
+	Get(int) (int, bool)
+	GetOrSet(int, func() (int, error)) (int, error)
+	Peek(int) (int, bool)
+	Contains(int) bool
+	Remove(int) bool
+	Resize(int) (int, error)
+	Clear()
+	Len() int
+	Capacity() int
+	Items() []Item[int, int]
+	OnRemove(OnRemoveFunc[int, int])
+}
+
+type fuzzRemoval struct {
+	key    int
+	value  int
+	reason RemovalReason
+}
+
+func applyFuzzRemovals(t *testing.T, model map[int]int, removals []fuzzRemoval, allowed ...RemovalReason) {
+	t.Helper()
+	for _, removal := range removals {
+		reasonAllowed := false
+		for _, reason := range allowed {
+			if removal.reason == reason {
+				reasonAllowed = true
+				break
+			}
+		}
+		if !reasonAllowed {
+			t.Fatalf("callback for key %d has unexpected reason %v", removal.key, removal.reason)
+		}
+		value, found := model[removal.key]
+		if !found {
+			t.Fatalf("callback reported unknown or duplicate key %d", removal.key)
+		}
+		if value != removal.value {
+			t.Fatalf("callback value for key %d: got %d, want %d", removal.key, removal.value, value)
+		}
+		delete(model, removal.key)
+	}
+}
+
+func assertPolicyCacheMatchesModel(t *testing.T, cache policyFuzzCache, model map[int]int) {
+	t.Helper()
+	if got := cache.Len(); got != len(model) {
+		t.Fatalf("Len: got %d, want %d", got, len(model))
+	}
+	if cache.Len() > cache.Capacity() {
+		t.Fatalf("length %d exceeds capacity %d", cache.Len(), cache.Capacity())
+	}
+
+	items := cache.Items()
+	if len(items) != len(model) {
+		t.Fatalf("Items length: got %d, want %d", len(items), len(model))
+	}
+	seen := make(map[int]bool, len(items))
+	for _, item := range items {
+		if seen[item.Key] {
+			t.Fatalf("Items contains duplicate key %d", item.Key)
+		}
+		seen[item.Key] = true
+		value, found := model[item.Key]
+		if !found {
+			t.Fatalf("Items contains unexpected key %d", item.Key)
+		}
+		if value != item.Value {
+			t.Fatalf("Items value for key %d: got %d, want %d", item.Key, item.Value, value)
+		}
+	}
+}
+
+func fuzzPolicyOperations(
+	t *testing.T,
+	operations []byte,
+	cache policyFuzzCache,
+	shardCount int,
+	insertReasons []RemovalReason,
+	assertInvariants func(*testing.T),
+) {
+	t.Helper()
+	model := make(map[int]int)
+	var removals []fuzzRemoval
+	cache.OnRemove(func(key, value int, reason RemovalReason) {
+		// Reentry also verifies that callbacks never run under a shard lock.
+		_ = cache.Len()
+		removals = append(removals, fuzzRemoval{key: key, value: value, reason: reason})
+	})
+
+	for i, operation := range operations[1:] {
+		removals = removals[:0]
+		key := int(operation & 31)
+		switch (operation >> 5) & 7 {
+		case 0:
+			value := i + 1
+			cache.Set(key, value)
+			model[key] = value
+			if len(removals) > 1 {
+				t.Fatalf("Set removed %d entries", len(removals))
+			}
+			applyFuzzRemovals(t, model, removals, insertReasons...)
+		case 1:
+			gotValue, gotFound := cache.Get(key)
+			wantValue, wantFound := model[key]
+			if gotValue != wantValue || gotFound != wantFound {
+				t.Fatalf("Get(%d): got (%d, %t), want (%d, %t)", key, gotValue, gotFound, wantValue, wantFound)
+			}
+			applyFuzzRemovals(t, model, removals)
+		case 2:
+			gotValue, gotFound := cache.Peek(key)
+			wantValue, wantFound := model[key]
+			if gotValue != wantValue || gotFound != wantFound {
+				t.Fatalf("Peek(%d): got (%d, %t), want (%d, %t)", key, gotValue, gotFound, wantValue, wantFound)
+			}
+			applyFuzzRemovals(t, model, removals)
+		case 3:
+			_, wantRemoved := model[key]
+			if gotRemoved := cache.Remove(key); gotRemoved != wantRemoved {
+				t.Fatalf("Remove(%d): got %t, want %t", key, gotRemoved, wantRemoved)
+			}
+			if len(removals) != boolInt(wantRemoved) {
+				t.Fatalf("Remove(%d) produced %d callbacks", key, len(removals))
+			}
+			applyFuzzRemovals(t, model, removals, RemovalReasonExplicit)
+		case 4:
+			newCapacity := shardCount + int(operation&15)
+			evicted, err := cache.Resize(newCapacity)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if evicted != len(removals) {
+				t.Fatalf("Resize returned %d evictions for %d callbacks", evicted, len(removals))
+			}
+			applyFuzzRemovals(t, model, removals, RemovalReasonResize)
+			if got := cache.Capacity(); got != newCapacity {
+				t.Fatalf("Capacity after Resize: got %d, want %d", got, newCapacity)
+			}
+		case 5:
+			before := len(model)
+			cache.Clear()
+			if len(removals) != before {
+				t.Fatalf("Clear produced %d callbacks for %d entries", len(removals), before)
+			}
+			applyFuzzRemovals(t, model, removals, RemovalReasonClear)
+		case 6:
+			_, want := model[key]
+			if got := cache.Contains(key); got != want {
+				t.Fatalf("Contains(%d): got %t, want %t", key, got, want)
+			}
+			applyFuzzRemovals(t, model, removals)
+		case 7:
+			wantValue, found := model[key]
+			computeCalls := 0
+			computedValue := -(i + 1)
+			gotValue, err := cache.GetOrSet(key, func() (int, error) {
+				computeCalls++
+				return computedValue, nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if found {
+				if computeCalls != 0 || gotValue != wantValue {
+					t.Fatalf("GetOrSet(%d) hit: got value %d and %d computes, want %d and 0", key, gotValue, computeCalls, wantValue)
+				}
+			} else {
+				if computeCalls != 1 || gotValue != computedValue {
+					t.Fatalf("GetOrSet(%d) miss: got value %d and %d computes, want %d and 1", key, gotValue, computeCalls, computedValue)
+				}
+				model[key] = computedValue
+			}
+			if len(removals) > 1 {
+				t.Fatalf("GetOrSet removed %d entries", len(removals))
+			}
+			applyFuzzRemovals(t, model, removals, insertReasons...)
+		}
+
+		assertPolicyCacheMatchesModel(t, cache, model)
+		assertInvariants(t)
+	}
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func assertClockInvariants(t *testing.T, cache *Clock[int, int]) {
+	t.Helper()
+	totalCapacity := 0
+	for shardIndex, shard := range cache.shards {
+		totalCapacity += shard.capacity
+		if len(shard.items) > shard.capacity {
+			t.Fatalf("shard %d: %d items exceed capacity %d", shardIndex, len(shard.items), shard.capacity)
+		}
+		if len(shard.ring) > shard.capacity {
+			t.Fatalf("shard %d: ring length %d exceeds capacity %d", shardIndex, len(shard.ring), shard.capacity)
+		}
+		if len(shard.ring) == 0 {
+			if shard.hand != 0 {
+				t.Fatalf("shard %d: empty ring has hand %d", shardIndex, shard.hand)
+			}
+		} else if shard.hand < 0 || shard.hand >= len(shard.ring) {
+			t.Fatalf("shard %d: hand %d is outside ring length %d", shardIndex, shard.hand, len(shard.ring))
+		}
+
+		free := make(map[int]bool, len(shard.free))
+		for _, index := range shard.free {
+			if index < 0 || index >= len(shard.ring) {
+				t.Fatalf("shard %d: free index %d is outside ring", shardIndex, index)
+			}
+			if free[index] {
+				t.Fatalf("shard %d: duplicate free index %d", shardIndex, index)
+			}
+			free[index] = true
+			if shard.ring[index] != nil {
+				t.Fatalf("shard %d: free index %d contains an entry", shardIndex, index)
+			}
+		}
+
+		ringEntries := 0
+		for index, entry := range shard.ring {
+			if entry == nil {
+				if !free[index] {
+					t.Fatalf("shard %d: nil ring index %d is not free", shardIndex, index)
+				}
+				continue
+			}
+			ringEntries++
+			if free[index] {
+				t.Fatalf("shard %d: live ring index %d is marked free", shardIndex, index)
+			}
+			if entry.idx != index {
+				t.Fatalf("shard %d: entry %d records index %d", shardIndex, index, entry.idx)
+			}
+			if shard.items[entry.key] != entry {
+				t.Fatalf("shard %d: map and ring disagree for key %d", shardIndex, entry.key)
+			}
+			if ref := atomic.LoadInt32(&entry.ref); ref != 0 && ref != 1 {
+				t.Fatalf("shard %d: key %d has invalid reference bit %d", shardIndex, entry.key, ref)
+			}
+		}
+		if ringEntries != len(shard.items) {
+			t.Fatalf("shard %d: ring has %d entries, map has %d", shardIndex, ringEntries, len(shard.items))
+		}
+		if ringEntries+len(shard.free) != len(shard.ring) {
+			t.Fatalf("shard %d: entries and free indexes do not cover ring", shardIndex)
+		}
+		for key, entry := range shard.items {
+			if entry.idx < 0 || entry.idx >= len(shard.ring) || shard.ring[entry.idx] != entry {
+				t.Fatalf("shard %d: map entry %d has invalid ring index %d", shardIndex, key, entry.idx)
+			}
+		}
+	}
+	if totalCapacity != cache.Capacity() {
+		t.Fatalf("shard capacities total %d, cache capacity is %d", totalCapacity, cache.Capacity())
+	}
+}
+
+func FuzzClockOperations(f *testing.F) {
+	f.Add([]byte{8, 0, 32, 64, 96, 128, 160, 192, 224, 255})
+	f.Add([]byte{3, 224, 193, 162, 131, 100, 69, 38, 7})
+
+	f.Fuzz(func(t *testing.T, operations []byte) {
+		if len(operations) == 0 {
+			return
+		}
+		if len(operations) > 1024 {
+			operations = operations[:1024]
+		}
+		shardCount := int(operations[0]%4) + 1
+		capacity := shardCount + int(operations[0]>>2)%13
+		cache := MustNewClockWithCount[int, int](capacity, shardCount)
+		fuzzPolicyOperations(t, operations, cache, shardCount,
+			[]RemovalReason{RemovalReasonCapacity},
+			func(t *testing.T) { assertClockInvariants(t, cache) })
+	})
+}
+
+func FuzzTinyLFUOperations(f *testing.F) {
+	f.Add([]byte{8, 0, 32, 64, 96, 128, 160, 192, 224, 255})
+	f.Add([]byte{3, 224, 193, 162, 131, 100, 69, 38, 7})
+
+	f.Fuzz(func(t *testing.T, operations []byte) {
+		if len(operations) == 0 {
+			return
+		}
+		if len(operations) > 1024 {
+			operations = operations[:1024]
+		}
+		shardCount := int(operations[0]%4) + 1
+		capacity := shardCount + int(operations[0]>>2)%13
+		cache := MustNewTinyLFUWithCount[int, int](capacity, shardCount)
+		fuzzPolicyOperations(t, operations, cache, shardCount,
+			[]RemovalReason{RemovalReasonCapacity, RemovalReasonAdmission},
+			func(t *testing.T) { requireTinyLFUInvariants(t, cache) })
 	})
 }
 
