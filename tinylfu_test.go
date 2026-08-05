@@ -273,7 +273,9 @@ func TestTinyLFU_Remove(t *testing.T) {
 
 func TestTinyLFU_KeysAndValues(t *testing.T) {
 	r := require.New(t)
-	cache := MustNewTinyLFU[int, int](100)
+	// Use one shard so this collection test does not depend on the random
+	// distribution of keys across independently capacity-limited shards.
+	cache := MustNewTinyLFUWithCount[int, int](100, 1)
 
 	want := make([]int, 0, 20)
 	wantValues := make([]int, 0, 20)

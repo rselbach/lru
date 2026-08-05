@@ -202,7 +202,9 @@ func TestClock_RemoveFreesSlotsForReuse(t *testing.T) {
 
 func TestClock_KeysAndValues(t *testing.T) {
 	r := require.New(t)
-	cache := MustNewClock[int, int](100)
+	// Use one shard so this collection test does not depend on the random
+	// distribution of keys across independently capacity-limited shards.
+	cache := MustNewClockWithCount[int, int](100, 1)
 
 	for i := 0; i < 20; i++ {
 		cache.Set(i, i*3)
