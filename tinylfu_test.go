@@ -425,6 +425,32 @@ func TestTinyLFU_Resize(t *testing.T) {
 		requireTinyLFUInvariants(t, cache)
 	})
 
+	t.Run("shrink rebalances an under-filled window", func(t *testing.T) {
+		cache := MustNewTinyLFUWithCount[int, int](10, 1)
+		fillTinySingleShard(cache, 10)
+		shard := cache.shards[0]
+		r.Equal(1, shard.window.len)
+		r.Equal(9, shard.probation.len+shard.protected.len)
+
+		// Removing the window resident leaves all remaining entries in main.
+		r.True(cache.Remove(9))
+		r.Zero(shard.window.len)
+		r.Equal(9, shard.probation.len+shard.protected.len)
+
+		evicted, err := cache.Resize(9)
+		r.NoError(err)
+		r.Zero(evicted, "all entries already fit in the new capacity")
+		r.Equal(1, shard.window.len)
+		r.Equal(8, shard.probation.len+shard.protected.len)
+		requireTinyLFUInvariants(t, cache)
+
+		// Preserving the segment bounds is what lets the next insertion evict
+		// normally instead of leaving the shard permanently over capacity.
+		cache.Set(10, 10)
+		r.Equal(9, cache.Len())
+		requireTinyLFUInvariants(t, cache)
+	})
+
 	t.Run("rebuilds sketch for new capacity", func(t *testing.T) {
 		cache := MustNewTinyLFUWithCount[int, int](16, 1)
 		oldSketch := cache.shards[0].sketch

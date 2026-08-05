@@ -938,6 +938,21 @@ func (s *tinyShard[K, V]) resizeLocked(shardCap int, collect bool) ([]evictedIte
 		count++
 	}
 
+	// Removing window entries before a shrink can leave main above its newly
+	// derived bound even when the shard already fits overall. Move main's
+	// coldest surplus entries into the window. Since len(items) <= shardCap,
+	// every surplus main entry is guaranteed to fit in the under-filled window.
+	for s.probation.len+s.protected.len > s.mainCap {
+		n := s.probation.tail
+		if n == nil {
+			n = s.protected.tail
+		}
+		s.listFor(n.segment).remove(n)
+		n.segment = tinyWindow
+		atomic.StoreUint32(&n.hits, 0)
+		s.window.pushFront(n)
+	}
+
 	// A shrunken window feeds its overflow through normal admission. The shard
 	// already fits, so main has room and no admission test can evict here.
 	for s.window.len > s.windowCap {
