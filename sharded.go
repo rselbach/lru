@@ -182,8 +182,8 @@ func (s *Sharded[K, V]) Remove(key K) bool {
 }
 
 // Len returns the current number of items in the cache across all shards.
-// The result is a point-in-time snapshot taken per shard and is not atomic with
-// respect to concurrent updates across shards.
+// The result is collected shard by shard and is not atomic with respect to
+// concurrent updates across shards.
 func (s *Sharded[K, V]) Len() int {
 	total := 0
 	for _, shard := range s.shards {
@@ -210,8 +210,8 @@ func (s *Sharded[K, V]) Contains(key K) bool {
 // with shards processed in order. Note that the global LRU order is not preserved
 // across shards.
 //
-// The result is a point-in-time snapshot and is not atomic with respect to
-// concurrent updates.
+// The result is a detached copy collected shard by shard and is not atomic with
+// respect to concurrent updates.
 func (s *Sharded[K, V]) Keys() []K {
 	keys := make([]K, 0, s.Len())
 	for _, shard := range s.shards {
@@ -225,10 +225,10 @@ func (s *Sharded[K, V]) Keys() []K {
 // within each shard, with shards processed in order. Note that the global LRU
 // order is not preserved across shards.
 //
-// The result is a point-in-time snapshot and is not atomic with respect to
-// concurrent updates. Keys and Values are separate snapshots taken shard by
-// shard, so their elements line up only when no other goroutine writes to the
-// cache between the two calls.
+// The result is a detached copy collected shard by shard and is not atomic with
+// respect to concurrent updates. Keys and Values are separate copies, so their
+// elements line up only when no other goroutine writes to the cache between the
+// two calls.
 func (s *Sharded[K, V]) Values() []V {
 	values := make([]V, 0, s.Len())
 	for _, shard := range s.shards {

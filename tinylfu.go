@@ -648,8 +648,8 @@ func (s *tinyShard[K, V]) computeAndSet(key K, hash uint64, compute func() (V, e
 }
 
 // Len returns the current number of items across all shards.
-// The result is a point-in-time snapshot taken per shard and is not atomic with
-// respect to concurrent updates across shards.
+// The result is collected shard by shard and is not atomic with respect to
+// concurrent updates across shards.
 func (c *TinyLFU[K, V]) Len() int {
 	total := 0
 	for _, s := range c.shards {
@@ -687,8 +687,8 @@ func (s *tinyShard[K, V]) appendNodesLocked(nodes []*tinyNode[K, V]) []*tinyNode
 // Keys returns a slice of all keys in the cache.
 //
 // The order is unspecified: TinyLFU keeps no global recency order, and shards
-// are processed independently. The result is a point-in-time snapshot and is
-// not atomic with respect to concurrent updates.
+// are processed independently. The result is a detached copy collected shard by
+// shard and is not atomic with respect to concurrent updates.
 func (c *TinyLFU[K, V]) Keys() []K {
 	keys := make([]K, 0, c.Len())
 	var nodes []*tinyNode[K, V]
@@ -706,7 +706,7 @@ func (c *TinyLFU[K, V]) Keys() []K {
 // Values returns a slice of all values in the cache.
 //
 // The order is unspecified, as for [TinyLFU.Keys]. Keys and Values are separate
-// snapshots taken under separate lock holds, so their elements line up only
+// copies collected under separate lock holds, so their elements line up only
 // when no other goroutine writes to the cache between the two calls.
 func (c *TinyLFU[K, V]) Values() []V {
 	values := make([]V, 0, c.Len())

@@ -67,9 +67,13 @@
 // [WithTTL] option is not applied. A singleflight compute function must not call
 // the same cache's GetOrSetSingleflight method recursively for the same key.
 //
-// Expired entries are removed lazily on access. They still occupy capacity until
-// purged, so a cache full of expired entries must purge on write (automatic when
-// a Set needs a slot), via [Expirable.RemoveExpired], or via the optional janitor.
+// [Expirable.Get] and [Expirable.GetWithTTL] remove an expired entry encountered
+// for their key. Inspection methods such as [Expirable.Peek], [Expirable.Contains],
+// [Expirable.Len], [Expirable.Keys], [Expirable.Values], and [Expirable.GetOldest]
+// filter or skip expired entries without purging them. Expired entries still
+// occupy capacity until purged, so a cache full of expired entries must purge on
+// write (automatic when a Set needs a slot), via [Expirable.RemoveExpired], or
+// via the optional janitor.
 // [Expirable.Len] reports only non-expired entries (O(n)); [Expirable.PhysicalLen]
 // reports entries still stored, including expired ones not yet purged (O(1)).
 //
@@ -84,8 +88,8 @@
 //
 // A [Sharded] cache splits total capacity across independent [Cache] instances
 // to reduce lock contention. It is not a global LRU: each shard enforces its own
-// capacity and recency order. Methods such as [Sharded.Keys] return a
-// point-in-time snapshot grouped by shard, not global recency order.
+// capacity and recency order. Methods such as [Sharded.Keys] return a detached
+// copy collected shard by shard, not an atomic snapshot or global recency order.
 // [Sharded.Len], [Sharded.Clear], and [Sharded.OnEvict] are likewise applied
 // per shard and are not atomic across the whole cache.
 //
@@ -139,9 +143,10 @@
 //
 // # Choosing a Cache Type
 //
-// [Cache], [Expirable], and [Sharded] provide exact semantics: precise LRU
-// order, oldest-entry accessors, and TTL expiration on Expirable. Choose them
-// when those semantics matter more than multi-core read throughput.
+// [Cache] and [Expirable] provide exact global LRU order and oldest-entry
+// accessors, with TTL expiration on Expirable. [Sharded] provides exact LRU
+// order only within each shard and has no cache-wide oldest-entry accessor.
+// Choose them when those semantics matter more than multi-core read throughput.
 //
 // [Clock] and [TinyLFU] trade exact ordering for reads that scale with cores.
 // Between them, Clock optimizes what a hit costs and TinyLFU optimizes how

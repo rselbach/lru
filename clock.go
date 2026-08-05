@@ -401,8 +401,8 @@ func (s *clockShard[K, V]) computeAndSet(key K, compute func() (V, error)) (V, e
 }
 
 // Len returns the current number of items across all shards.
-// The result is a point-in-time snapshot taken per shard and is not atomic with
-// respect to concurrent updates across shards.
+// The result is collected shard by shard and is not atomic with respect to
+// concurrent updates across shards.
 func (c *Clock[K, V]) Len() int {
 	total := 0
 	for _, s := range c.shards {
@@ -429,8 +429,8 @@ func (c *Clock[K, V]) ShardCount() int {
 // Keys returns a slice of all keys in the cache.
 //
 // The order is unspecified: Clock keeps no recency order, and shards are
-// processed independently. The result is a point-in-time snapshot and is not
-// atomic with respect to concurrent updates.
+// processed independently. The result is a detached copy collected shard by
+// shard and is not atomic with respect to concurrent updates.
 func (c *Clock[K, V]) Keys() []K {
 	keys := make([]K, 0, c.Len())
 	for _, s := range c.shards {
@@ -448,7 +448,7 @@ func (c *Clock[K, V]) Keys() []K {
 // Values returns a slice of all values in the cache.
 //
 // The order is unspecified, as for [Clock.Keys]. Keys and Values are separate
-// snapshots taken under separate lock holds, so their elements line up only
+// copies collected under separate lock holds, so their elements line up only
 // when no other goroutine writes to the cache between the two calls.
 func (c *Clock[K, V]) Values() []V {
 	values := make([]V, 0, c.Len())
