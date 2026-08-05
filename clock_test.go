@@ -244,6 +244,13 @@ func TestClock_Clear(t *testing.T) {
 	r.Zero(cache.Len())
 	r.Empty(cache.Keys())
 	r.Len(evicted, 20)
+	for _, s := range cache.shards {
+		// Clear may retain the ring allocation for reuse, but it must release
+		// every entry pointer stored in that backing array.
+		for _, e := range s.ring[:cap(s.ring)] {
+			r.Nil(e)
+		}
+	}
 
 	// The cache must still work after being cleared.
 	cache.Set(1, 1)

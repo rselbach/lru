@@ -487,6 +487,12 @@ func (c *Clock[K, V]) Clear() {
 		}
 
 		s.items = make(map[K]*clockEntry[K, V], allocationHint(s.capacity))
+		// The ring keeps its backing array for reuse, so clear its pointer slots
+		// before truncating it. Otherwise every removed key and value remains
+		// reachable until a later insertion overwrites the corresponding slot.
+		for i := range s.ring {
+			s.ring[i] = nil
+		}
 		s.ring = s.ring[:0]
 		s.free = s.free[:0]
 		s.hand = 0
