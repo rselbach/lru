@@ -1,6 +1,7 @@
 package lru
 
 import (
+	"context"
 	"fmt"
 	"sync"
 )
@@ -162,8 +163,21 @@ func (s *Sharded[K, V]) GetOrSet(key K, compute func() (V, error)) (V, error) {
 // The singleflight deduplication only applies to concurrent in-flight calls; once a value is cached,
 // subsequent calls return the cached value without invoking singleflight. compute must not call
 // GetOrSetSingleflight recursively for the same key because it would wait on its own call.
+// A compute error is returned to all current callers and is not cached. A panic
+// or runtime.Goexit from compute is propagated to all current callers.
 func (s *Sharded[K, V]) GetOrSetSingleflight(key K, compute func() (V, error)) (V, error) {
 	return s.getShard(key).GetOrSetSingleflight(key, compute)
+}
+
+// GetOrSetSingleflightContext behaves like [Sharded.GetOrSetSingleflight], with
+// context cancellation for the computation and its waiters. See
+// [Cache.GetOrSetSingleflightContext] for the cancellation semantics.
+func (s *Sharded[K, V]) GetOrSetSingleflightContext(
+	ctx context.Context,
+	key K,
+	compute func(context.Context) (V, error),
+) (V, error) {
+	return s.getShard(key).GetOrSetSingleflightContext(ctx, key, compute)
 }
 
 // Set adds or updates an item in the cache.

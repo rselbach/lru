@@ -112,6 +112,10 @@ if err != nil {
 }
 ```
 
+Use `GetOrSetSingleflightContext` when canceled followers should be able to stop
+waiting for the shared computation. The caller that starts the computation
+supplies the context passed to its compute function.
+
 Sharded cache for high-concurrency workloads (per-shard LRU, not global):
 
 ```go

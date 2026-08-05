@@ -44,6 +44,13 @@
 //	    return expensiveAPICall()
 //	})
 //
+// A compute error is returned to all current callers and is not cached. A panic
+// or runtime.Goexit from compute is propagated to all current callers, and a
+// later call can retry. Context-aware variants such as
+// [Cache.GetOrSetSingleflightContext] let a canceled follower stop waiting
+// without canceling the shared computation. The caller that starts a computation
+// supplies its context to the compute function.
+//
 // # Expirable Cache
 //
 // Create a cache where entries expire after a duration:

@@ -1,6 +1,7 @@
 package lru
 
 import (
+	"context"
 	"runtime"
 	"sync"
 )
@@ -15,8 +16,8 @@ type flightGroup[K comparable, V any] struct {
 }
 
 type flightCall[V any] struct {
-	wg sync.WaitGroup
-	// waiting counts follower goroutines blocked on wg.Wait. Same-package
+	done chan struct{}
+	// waiting counts follower goroutines blocked on done. Same-package
 	// tests use it as a join barrier before releasing the leader.
 	waiting    int
 	val        V
@@ -27,8 +28,28 @@ type flightCall[V any] struct {
 }
 
 func (g *flightGroup[K, V]) Do(key K, fn func() (V, error)) (V, error) {
+	return g.do(nil, key, fn)
+}
+
+// DoContext behaves like Do, except a follower waiting for an existing call can
+// stop waiting when ctx is canceled. The goroutine that starts the call remains
+// responsible for running fn to completion.
+func (g *flightGroup[K, V]) DoContext(ctx context.Context, key K, fn func() (V, error)) (V, error) {
+	if ctx == nil {
+		panic("lru: nil Context")
+	}
+	return g.do(ctx, key, fn)
+}
+
+func (g *flightGroup[K, V]) do(ctx context.Context, key K, fn func() (V, error)) (V, error) {
 	if !g.skipKeyCheck {
 		if err := validateKey(key); err != nil {
+			var zero V
+			return zero, err
+		}
+	}
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
 			var zero V
 			return zero, err
 		}
@@ -41,7 +62,19 @@ func (g *flightGroup[K, V]) Do(key K, fn func() (V, error)) (V, error) {
 	if c := g.calls[key]; c != nil {
 		c.waiting++
 		g.mu.Unlock()
-		c.wg.Wait()
+		if ctx == nil {
+			<-c.done
+		} else {
+			select {
+			case <-c.done:
+			case <-ctx.Done():
+				g.mu.Lock()
+				c.waiting--
+				g.mu.Unlock()
+				var zero V
+				return zero, ctx.Err()
+			}
+		}
 		if c.panicked {
 			panic(c.panicValue)
 		}
@@ -51,8 +84,7 @@ func (g *flightGroup[K, V]) Do(key K, fn func() (V, error)) (V, error) {
 		return c.val, c.err
 	}
 
-	c := &flightCall[V]{}
-	c.wg.Add(1)
+	c := &flightCall[V]{done: make(chan struct{})}
 	g.calls[key] = c
 	g.mu.Unlock()
 
@@ -72,7 +104,7 @@ func (g *flightGroup[K, V]) Do(key K, fn func() (V, error)) (V, error) {
 		// find this call and join a fn that has already returned, contrary to
 		// deduplicating only calls that are genuinely in flight.
 		g.mu.Lock()
-		c.wg.Done()
+		close(c.done)
 		delete(g.calls, key)
 		g.mu.Unlock()
 

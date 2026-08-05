@@ -1,6 +1,7 @@
 package lru
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 )
@@ -590,9 +591,43 @@ func (c *TinyLFU[K, V]) GetOrSet(key K, compute func() (V, error)) (V, error) {
 // cached, subsequent calls return it without invoking singleflight. compute
 // must not call GetOrSetSingleflight recursively for the same key because it
 // would wait on its own call.
+// A compute error is returned to all current callers and is not cached. A panic
+// or runtime.Goexit from compute is propagated to all current callers.
 func (c *TinyLFU[K, V]) GetOrSetSingleflight(key K, compute func() (V, error)) (V, error) {
+	return c.getOrSetSingleflight(nil, key, compute)
+}
+
+// GetOrSetSingleflightContext behaves like [TinyLFU.GetOrSetSingleflight], with
+// context cancellation for the computation and its waiters. The caller that
+// starts the computation supplies the context passed to compute. A follower can
+// stop waiting when its own context is canceled without canceling the shared
+// computation, which may still cache its result. The method panics if ctx is nil.
+func (c *TinyLFU[K, V]) GetOrSetSingleflightContext(
+	ctx context.Context,
+	key K,
+	compute func(context.Context) (V, error),
+) (V, error) {
+	if ctx == nil {
+		panic("lru: nil Context")
+	}
+	return c.getOrSetSingleflight(ctx, key, func() (V, error) {
+		return compute(ctx)
+	})
+}
+
+func (c *TinyLFU[K, V]) getOrSetSingleflight(
+	ctx context.Context,
+	key K,
+	compute func() (V, error),
+) (V, error) {
 	if !c.hasher.skipKeyCheck {
 		if err := validateKey(key); err != nil {
+			var zero V
+			return zero, err
+		}
+	}
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
 			var zero V
 			return zero, err
 		}
@@ -603,7 +638,7 @@ func (c *TinyLFU[K, V]) GetOrSetSingleflight(key K, compute func() (V, error)) (
 		return val, nil
 	}
 
-	result, err := s.sfGroup.Do(key, func() (V, error) {
+	result, err := s.sfGroup.do(ctx, key, func() (V, error) {
 		if val, ok := s.get(key); ok {
 			return val, nil
 		}

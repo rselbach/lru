@@ -1,6 +1,7 @@
 package lru
 
 import (
+	"context"
 	"errors"
 	"runtime"
 	"sync"
@@ -250,4 +251,131 @@ func TestFlightGroup_GoexitPropagatesToWaiters(t *testing.T) {
 	value, err := g.Do("k", func() (int, error) { return 7, nil })
 	r.NoError(err)
 	r.Equal(7, value)
+}
+
+func TestFlightGroup_ContextFollowerCanCancel(t *testing.T) {
+	r := require.New(t)
+	var g flightGroup[string, int]
+	started := make(chan struct{})
+	release := make(chan struct{})
+	leaderDone := make(chan struct{})
+	leaderErr := make(chan error, 1)
+
+	go func() {
+		defer close(leaderDone)
+		value, err := g.Do("k", func() (int, error) {
+			close(started)
+			<-release
+			return 7, nil
+		})
+		if err == nil && value != 7 {
+			err = errors.New("leader received wrong value")
+		}
+		leaderErr <- err
+	}()
+	<-started
+
+	ctx, cancel := context.WithCancel(context.Background())
+	waiterDone := make(chan error, 1)
+	waiterComputed := false
+	go func() {
+		_, err := g.DoContext(ctx, "k", func() (int, error) {
+			waiterComputed = true
+			return 99, nil
+		})
+		waiterDone <- err
+	}()
+	waitForFlightWaiters(t, &g, "k", 1)
+	cancel()
+
+	select {
+	case err := <-waiterDone:
+		r.ErrorIs(err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("context follower did not stop waiting")
+	}
+	r.False(waiterComputed)
+	select {
+	case <-leaderDone:
+		t.Fatal("canceling a follower canceled the leader")
+	default:
+	}
+
+	close(release)
+	<-leaderDone
+	r.NoError(<-leaderErr)
+}
+
+func TestFlightGroup_CanceledContextDoesNotStartCall(t *testing.T) {
+	r := require.New(t)
+	var g flightGroup[string, int]
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	computed := false
+
+	_, err := g.DoContext(ctx, "k", func() (int, error) {
+		computed = true
+		return 1, nil
+	})
+	r.ErrorIs(err, context.Canceled)
+	r.False(computed)
+	r.Nil(g.calls)
+}
+
+func TestGetOrSetSingleflightContext_CanceledBeforeCompute(t *testing.T) {
+	r := require.New(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	cache := MustNew[string, int](4)
+	expirable := MustNewExpirable[string, int](4, time.Minute)
+	sharded := MustNewSharded[string, int](4)
+	clock := MustNewClock[string, int](4)
+	tiny := MustNewTinyLFU[string, int](4)
+
+	tests := map[string]func(context.Context, func(context.Context) (int, error)) (int, error){
+		"cache": func(ctx context.Context, fn func(context.Context) (int, error)) (int, error) {
+			return cache.GetOrSetSingleflightContext(ctx, "k", fn)
+		},
+		"expirable": func(ctx context.Context, fn func(context.Context) (int, error)) (int, error) {
+			return expirable.GetOrSetSingleflightContext(ctx, "k", fn)
+		},
+		"sharded": func(ctx context.Context, fn func(context.Context) (int, error)) (int, error) {
+			return sharded.GetOrSetSingleflightContext(ctx, "k", fn)
+		},
+		"clock": func(ctx context.Context, fn func(context.Context) (int, error)) (int, error) {
+			return clock.GetOrSetSingleflightContext(ctx, "k", fn)
+		},
+		"tiny LFU": func(ctx context.Context, fn func(context.Context) (int, error)) (int, error) {
+			return tiny.GetOrSetSingleflightContext(ctx, "k", fn)
+		},
+	}
+
+	for name, call := range tests {
+		t.Run(name, func(t *testing.T) {
+			computed := false
+			_, err := call(ctx, func(context.Context) (int, error) {
+				computed = true
+				return 1, nil
+			})
+			r.ErrorIs(err, context.Canceled)
+			r.False(computed)
+		})
+	}
+}
+
+func TestCache_GetOrSetSingleflightContextCachesLeaderResult(t *testing.T) {
+	r := require.New(t)
+	cache := MustNew[string, int](4)
+	ctx := context.WithValue(context.Background(), struct{}{}, "leader")
+
+	value, err := cache.GetOrSetSingleflightContext(ctx, "k", func(got context.Context) (int, error) {
+		r.Same(ctx, got)
+		return 7, nil
+	})
+	r.NoError(err)
+	r.Equal(7, value)
+	stored, found := cache.Get("k")
+	r.True(found)
+	r.Equal(7, stored)
 }

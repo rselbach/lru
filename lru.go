@@ -1,5 +1,7 @@
 package lru
 
+import "context"
+
 // Cache represents a thread-safe, fixed-size LRU cache.
 // A Cache must be created with [New] or [MustNew]; the zero value is not ready
 // for use. A Cache must not be copied after first use.
@@ -127,10 +129,44 @@ func (c *Cache[K, V]) GetOrSet(key K, compute func() (V, error)) (V, error) {
 // The singleflight deduplication only applies to concurrent in-flight calls; once a value is cached,
 // subsequent calls return the cached value without invoking singleflight. compute must not call
 // GetOrSetSingleflight recursively for the same key because it would wait on its own call.
+// A compute error is returned to all current callers and is not cached. A panic
+// or runtime.Goexit from compute is propagated to all current callers.
 func (c *Cache[K, V]) GetOrSetSingleflight(key K, compute func() (V, error)) (V, error) {
+	return c.getOrSetSingleflight(nil, key, compute)
+}
+
+// GetOrSetSingleflightContext behaves like [Cache.GetOrSetSingleflight], with
+// context cancellation for the computation and its waiters. The caller that
+// starts the computation supplies the context passed to compute. A follower can
+// stop waiting when its own context is canceled without canceling the shared
+// computation, which may still cache its result. The method panics if ctx is nil.
+func (c *Cache[K, V]) GetOrSetSingleflightContext(
+	ctx context.Context,
+	key K,
+	compute func(context.Context) (V, error),
+) (V, error) {
+	if ctx == nil {
+		panic("lru: nil Context")
+	}
+	return c.getOrSetSingleflight(ctx, key, func() (V, error) {
+		return compute(ctx)
+	})
+}
+
+func (c *Cache[K, V]) getOrSetSingleflight(
+	ctx context.Context,
+	key K,
+	compute func() (V, error),
+) (V, error) {
 	if err := c.checkKey(key); err != nil {
 		var zero V
 		return zero, err
+	}
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			var zero V
+			return zero, err
+		}
 	}
 
 	// fast path: check if item exists
@@ -139,7 +175,7 @@ func (c *Cache[K, V]) GetOrSetSingleflight(key K, compute func() (V, error)) (V,
 	}
 
 	// use singleflight to deduplicate concurrent computes for the same typed key
-	result, err := c.sfGroup.Do(key, func() (V, error) {
+	result, err := c.sfGroup.do(ctx, key, func() (V, error) {
 		// check again inside singleflight in case another goroutine just cached it
 		if val, found := c.Get(key); found {
 			return val, nil
