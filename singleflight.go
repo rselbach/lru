@@ -28,7 +28,7 @@ type flightCall[V any] struct {
 }
 
 func (g *flightGroup[K, V]) Do(key K, fn func() (V, error)) (V, error) {
-	return g.do(nil, key, fn)
+	return g.do(context.Background(), key, fn)
 }
 
 // DoContext behaves like Do, except a follower waiting for an existing call can

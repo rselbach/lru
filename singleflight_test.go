@@ -365,9 +365,11 @@ func TestGetOrSetSingleflightContext_CanceledBeforeCompute(t *testing.T) {
 }
 
 func TestCache_GetOrSetSingleflightContextCachesLeaderResult(t *testing.T) {
+	type contextKey struct{}
+
 	r := require.New(t)
 	cache := MustNew[string, int](4)
-	ctx := context.WithValue(context.Background(), struct{}{}, "leader")
+	ctx := context.WithValue(context.Background(), contextKey{}, "leader")
 
 	value, err := cache.GetOrSetSingleflightContext(ctx, "k", func(got context.Context) (int, error) {
 		r.Same(ctx, got)

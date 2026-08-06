@@ -307,7 +307,7 @@ func (c *Expirable[K, V]) GetOrSet(key K, compute func() (V, error), opts ...Set
 // A compute error is returned to all current callers and is not cached. A panic
 // or runtime.Goexit from compute is propagated to all current callers.
 func (c *Expirable[K, V]) GetOrSetSingleflight(key K, compute func() (V, error), opts ...SetOption) (V, error) {
-	return c.getOrSetSingleflight(nil, key, compute, opts)
+	return c.getOrSetSingleflight(context.Background(), key, compute, opts)
 }
 
 // GetOrSetSingleflightContext behaves like [Expirable.GetOrSetSingleflight],

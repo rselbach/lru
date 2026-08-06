@@ -133,7 +133,7 @@ func (c *Cache[K, V]) GetOrSet(key K, compute func() (V, error)) (V, error) {
 // A compute error is returned to all current callers and is not cached. A panic
 // or runtime.Goexit from compute is propagated to all current callers.
 func (c *Cache[K, V]) GetOrSetSingleflight(key K, compute func() (V, error)) (V, error) {
-	return c.getOrSetSingleflight(nil, key, compute)
+	return c.getOrSetSingleflight(context.Background(), key, compute)
 }
 
 // GetOrSetSingleflightContext behaves like [Cache.GetOrSetSingleflight], with
