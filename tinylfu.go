@@ -500,8 +500,8 @@ func (s *tinyShard[K, V]) overflowWindowLocked() (K, V, RemovalReason, bool) {
 	if victim == nil {
 		// mainCap is zero: the window is the whole shard, so the candidate
 		// simply leaves.
-		key, val, ok := s.dropLocked(candidate)
-		return key, val, RemovalReasonCapacity, ok
+		delete(s.items, candidate.key)
+		return candidate.key, candidate.val, RemovalReasonCapacity, true
 	}
 
 	// The admission test: a candidate that is not estimated to be hotter than
@@ -509,12 +509,12 @@ func (s *tinyShard[K, V]) overflowWindowLocked() (K, V, RemovalReason, bool) {
 	// displacing the working set.
 	if s.sketch.frequency(candidate.hash) > s.sketch.frequency(victim.hash) {
 		s.listFor(victim.segment).remove(victim)
-		evictedKey, evictedVal, _ := s.dropLocked(victim)
+		delete(s.items, victim.key)
 		s.moveToProbationLocked(candidate)
-		return evictedKey, evictedVal, RemovalReasonCapacity, true
+		return victim.key, victim.val, RemovalReasonCapacity, true
 	}
-	key, val, ok := s.dropLocked(candidate)
-	return key, val, RemovalReasonAdmission, ok
+	delete(s.items, candidate.key)
+	return candidate.key, candidate.val, RemovalReasonAdmission, true
 }
 
 // moveToProbationLocked places a detached node into probation, resetting its
@@ -523,13 +523,6 @@ func (s *tinyShard[K, V]) moveToProbationLocked(n *tinyNode[K, V]) {
 	n.segment = tinyProbation
 	atomic.StoreUint32(&n.hits, 0)
 	s.probation.pushFront(n)
-}
-
-// dropLocked removes a detached node from the cache. Caller must have already
-// removed it from its list.
-func (s *tinyShard[K, V]) dropLocked(n *tinyNode[K, V]) (K, V, bool) {
-	delete(s.items, n.key)
-	return n.key, n.val, true
 }
 
 // Remove deletes an item from the cache by key.
@@ -549,13 +542,13 @@ func (c *TinyLFU[K, V]) Remove(key K) bool {
 	}
 
 	s.listFor(n.segment).remove(n)
-	evictedKey, evictedVal, _ := s.dropLocked(n)
+	delete(s.items, n.key)
 	onEvict := s.onEvict
 	onRemove := s.onRemove
 	s.mu.Unlock()
 
 	if onEvict != nil || onRemove != nil {
-		invokeCallbacks(onEvict, onRemove, evictedKey, evictedVal, RemovalReasonExplicit)
+		invokeCallbacks(onEvict, onRemove, n.key, n.val, RemovalReasonExplicit)
 	}
 	return true
 }
@@ -902,9 +895,9 @@ func (s *tinyShard[K, V]) resizeLocked(shardCap int, collect bool) ([]evictedIte
 			victim = s.window.tail
 		}
 		s.listFor(victim.segment).remove(victim)
-		evictedKey, evictedVal, _ := s.dropLocked(victim)
+		delete(s.items, victim.key)
 		if collect {
-			evicted = append(evicted, evictedItem[K, V]{key: evictedKey, val: evictedVal})
+			evicted = append(evicted, evictedItem[K, V]{key: victim.key, val: victim.val})
 		}
 		count++
 	}
