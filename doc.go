@@ -144,33 +144,22 @@
 // above the entry it would displace. One-shot keys therefore cannot flush the
 // working set, which lifts hit rates on skewed traffic and makes the cache
 // resistant to the scans and loops that degrade LRU-family policies, including
-// [Clock]. Reads take only a read lock and record accesses into a small lossy
-// per-shard buffer that later writes apply, so read throughput scales with
-// cores and reads never invoke eviction callbacks.
-//
-// Because admission may reject the newest key, an entry just written to a full
-// cache can be evicted before it is ever read; this is the admission policy
-// working, not a bug. Code that stores a value and relies on reading that same
-// key back immediately should use a cache type without an admission policy.
+// [Clock]. Hits are sampled into a lossy per-shard buffer. Writes and readers
+// that acquire the write lock without waiting apply the buffered accesses.
+// Applying them never evicts entries or invokes eviction callbacks.
 //
 // # Choosing a Cache Type
 //
-// [Cache] and [Expirable] provide exact global LRU order and oldest-entry
-// accessors, with TTL expiration on Expirable. [Sharded] provides exact LRU
-// order only within each shard and has no cache-wide oldest-entry accessor.
-// Choose them when those semantics matter more than multi-core read throughput.
+// Choose [Cache] for exact LRU order, [Expirable] for TTL expiration, and
+// [Sharded] for exact LRU within independent shards. Oldest-entry accessors
+// are available on Cache and Expirable.
 //
-// [Clock] and [TinyLFU] trade exact ordering for reads that scale with cores.
-// Between them, Clock optimizes what a hit costs and TinyLFU optimizes how
-// often you hit: a TinyLFU read pays a few extra nanoseconds of bookkeeping,
-// and in exchange the admission policy typically recovers several points of
-// hit rate on skewed or scan-heavy traffic. One point of hit rate saves one
-// hundredth of the miss cost per request, so whenever a miss costs more than
-// about a microsecond, as any database query, RPC, or disk read does, TinyLFU
-// is the better default. Prefer Clock when misses are nearly free, when the
-// working set fits in capacity so no policy can add hit rate, when traffic
-// concentrates on a single hot key, or when a stored entry must never be
-// evicted by admission rather than by pressure.
+// [Clock] and [TinyLFU] trade exact recency ordering for less work under an
+// exclusive lock. Choose Clock for simple approximate eviction. Consider
+// TinyLFU when scans or repeated loops evict useful entries: its admission
+// policy can preserve them by rejecting less frequently accessed candidates.
+// Compare hit rate and total request cost on your workload before choosing
+// between them. Neither policy guarantees survival across subsequent writes.
 //
 // # Concurrency
 //
@@ -180,11 +169,9 @@
 // at the cost of not refreshing recency, so reads that do not need recency
 // updates scale considerably better.
 //
-// [Clock.Get] and [TinyLFU.Get] take only a read lock because neither maintains
-// an exact order, which is why those two types' read throughput rises rather
-// than falls as cores are added. Clock's reads are the cheaper of the two;
-// TinyLFU spends the difference on the frequency bookkeeping its admission
-// policy needs.
+// [Clock.Get] uses a read lock. [TinyLFU.Get] looks up entries under a read
+// lock and may acquire the write lock without waiting to drain buffered
+// accesses. Both avoid updating exact LRU order on every hit.
 //
 // # Removal Callbacks
 //
@@ -225,8 +212,8 @@
 // Resize and Clear report evicted entries in order from least recently used to
 // most recently used within the cache (or within each shard for [Sharded]);
 // [Clock] and [TinyLFU] keep no such order and report them in an unspecified
-// one. [TinyLFU] reads never invoke the callback at all: its buffered access
-// records are applied by writes, and applying them never evicts.
+// one. Applying [TinyLFU]'s buffered access records never evicts entries,
+// so reads never invoke the callback.
 // They collect the entries to report while holding the cache lock so the
 // callbacks can run without it, which costs one buffered key/value pair per
 // evicted entry; clearing a large cache with a callback set allocates in

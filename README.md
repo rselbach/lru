@@ -44,7 +44,7 @@ The v1 API remains available at `github.com/rselbach/lru`.
 | `Resize` / callbacks | Yes | Yes | Yes, per shard | Yes, per shard | Yes, per shard |
 | Oldest-entry helpers | Yes | Yes | No | No | No |
 | `Keys` / `Values` order | MRU to LRU | MRU to LRU | Per shard | Unspecified | Unspecified |
-| Reads scale with cores | No | No | No | Yes | Yes |
+| `Get` lookup lock | Exclusive | Exclusive | Exclusive | Shared | Shared |
 | Scan and loop resistant | No | No | No | No | Yes |
 | `Len` complexity | O(1) | O(n), live entries only | O(shards) | O(shards) | O(shards) |
 
@@ -52,19 +52,15 @@ On `Cache`, `Expirable`, and `Sharded`, `Get` updates recency and therefore
 takes an exclusive cache lock, so concurrent `Get` calls serialize. Use `Peek`
 when a read should neither change recency nor serialize with other readers.
 
-`Clock` and `TinyLFU` maintain no exact recency order, so their `Get` takes
-only a read lock and their read throughput rises rather than falls as cores
-are added, at the cost of approximate eviction and unordered `Keys`/`Values`.
+`Clock` and `TinyLFU` trade exact recency ordering for less work under an
+exclusive lock. `Clock.Get` uses a read lock. `TinyLFU.Get` buffers sampled
+accesses and may acquire the write lock without waiting to apply them.
 
-Between the two: `Clock` optimizes what a hit costs, `TinyLFU` optimizes how
-often you hit. A point of hit rate saves a hundredth of the miss cost per
-request, so when a miss costs more than about a microsecond (a database query,
-RPC, or disk read), `TinyLFU`'s admission policy is the better default; it also
-survives scans and loops that flush LRU-family caches. Prefer `Clock` when
-misses are nearly free, when the working set fits in capacity, or when traffic
-concentrates on a single hot key. Note that `TinyLFU` admission may evict a
-just-written cold key before it is ever read; use `Clock` or `Cache` when a
-stored entry must survive until evicted by pressure.
+Choose `Clock` for simple approximate eviction. Consider `TinyLFU` when scans
+or repeated loops evict useful entries: its admission policy can preserve them
+by rejecting less frequently accessed candidates. Compare hit rate and total
+request cost on your workload before choosing between them. Neither policy
+guarantees that an entry survives subsequent writes.
 
 `Sharded` helps only when concurrent keys spread across shards. One dominant
 key routes every operation to the same shard, where hashing is pure overhead,

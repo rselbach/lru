@@ -294,6 +294,10 @@ func TestTinyLFU_KeysAndValues(t *testing.T) {
 		wantItems = append(wantItems, Item[int, int]{Key: i, Value: i * 3})
 	}
 	r.ElementsMatch(wantItems, cache.Items())
+	keys, values := cache.Keys(), cache.Values()
+	for i, key := range keys {
+		r.Equal(key*3, values[i])
+	}
 }
 
 func TestTinyLFU_Clear(t *testing.T) {
@@ -617,9 +621,6 @@ func requireTinyLFUInvariants[K comparable, V any](t *testing.T, c *TinyLFU[K, V
 				}
 				if n.segment != seg.tag {
 					problems = append(problems, fmt.Sprintf("shard %d %s: node tagged %d", i, seg.name, n.segment))
-				}
-				if n.dead {
-					problems = append(problems, fmt.Sprintf("shard %d %s: dead node in list", i, seg.name))
 				}
 				if s.items[n.key] != n {
 					problems = append(problems, fmt.Sprintf("shard %d %s: map and list disagree", i, seg.name))

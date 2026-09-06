@@ -8,10 +8,9 @@ import (
 
 const (
 	// tinySamplePeriod thins access recording: an entry records its first hit
-	// and then every sixteenth, and misses are sampled at the same rate on the
-	// write path. The policy simulator showed this costs under half a point of
-	// hit rate while removing sixteen-seventeenths of the shared writes a read
-	// would otherwise perform.
+	// and then every sixteenth. New insertions are sampled at the same rate
+	// on the write path. Sampling reduces buffer writes and policy updates;
+	// every hit still increments the entry's atomic counter.
 	tinySamplePeriod = 16
 	tinySampleMask   = tinySamplePeriod - 1
 
@@ -45,10 +44,10 @@ const (
 // which makes TinyLFU resistant to scans and loops that degrade [Cache] and
 // [Clock], while also improving hit rates on skewed workloads.
 //
-// Reads take only a shard read lock. A hit records itself into a small lossy
-// per-shard buffer, sampled so most hits perform no shared write at all, and a
-// later write (or an uncontended volunteer reader) drains the buffer into the
-// policy. Recency and frequency bookkeeping is therefore approximate and
+// Reads look up entries under a shard read lock. Hits are sampled into a small
+// lossy per-shard buffer. A later write or a reader that acquires the write
+// lock without waiting drains the buffer into the policy. Recency and
+// frequency bookkeeping is therefore approximate and
 // slightly deferred; eviction decisions and callbacks happen only on writes,
 // never inside a read.
 //
@@ -77,11 +76,8 @@ type tinyNode[K comparable, V any] struct {
 	// records the access when the count crosses the sampling boundary.
 	hits    uint32
 	segment int8
-	// dead marks entries removed from the map so a stale read-buffer record
-	// cannot resurrect them during a drain.
-	dead bool
-	prev *tinyNode[K, V]
-	next *tinyNode[K, V]
+	prev    *tinyNode[K, V]
+	next    *tinyNode[K, V]
 }
 
 // tinyList is an intrusive doubly-linked list; head is most recently used.
@@ -270,10 +266,10 @@ func (c *TinyLFU[K, V]) shardFor(key K) (*tinyShard[K, V], uint64) {
 // Get retrieves a value from the cache by key. It returns the value and a
 // boolean indicating whether the key was found.
 //
-// Get takes only a read lock. The access is recorded into a sampled, lossy
-// per-shard buffer and applied to the eviction policy by a later write, so a
-// hit improves the entry's standing without reordering anything inline. Reads
-// never invoke the eviction callback.
+// Get looks up the entry under a read lock and samples accesses into a lossy
+// per-shard buffer. A later write or a reader that acquires the write lock
+// without waiting applies the buffered accesses to the eviction policy.
+// Reads never invoke the eviction callback.
 func (c *TinyLFU[K, V]) Get(key K) (V, bool) {
 	var zero V
 	if !c.hasher.skipKeyCheck && validateKey(key) != nil {
@@ -332,15 +328,13 @@ func (s *tinyShard[K, V]) tryDrain() {
 
 // drainLocked applies buffered access records to the policy. Records feed the
 // sketch and reorder segments; draining never evicts, so reads never trigger
-// eviction callbacks. Caller must hold the write lock.
+// eviction callbacks. Caller must hold the write lock. Removals drain first,
+// and Clear discards the buffer, so every buffered node is still in the cache.
 func (s *tinyShard[K, V]) drainLocked() {
 	tail := atomic.LoadUint32(&s.bufTail)
 	for i := atomic.LoadUint32(&s.bufHead); i != tail; i++ {
 		n := s.buffer[i&tinyReadBufferMask]
 		s.buffer[i&tinyReadBufferMask] = nil
-		if n == nil || n.dead {
-			continue
-		}
 		s.sketch.increment(n.hash)
 		s.onAccessLocked(n)
 	}
@@ -363,11 +357,7 @@ func (s *tinyShard[K, V]) onAccessLocked(n *tinyNode[K, V]) {
 		if s.protected.len > s.protectedCap {
 			demoted := s.protected.tail
 			s.protected.remove(demoted)
-			demoted.segment = tinyProbation
-			// reset so the demoted entry's next hit records immediately and
-			// can re-promote it
-			atomic.StoreUint32(&demoted.hits, 0)
-			s.probation.pushFront(demoted)
+			s.moveToProbationLocked(demoted)
 		}
 	}
 }
@@ -426,11 +416,6 @@ func (c *TinyLFU[K, V]) Contains(key K) bool {
 // otherwise the candidate itself is evicted. Either way at most one entry
 // leaves the cache, and the eviction callback receives it.
 //
-// A consequence is that on a full cache a just-written cold key can be evicted
-// within the next few writes, before it is ever read. That is the admission
-// policy protecting the working set, not a bug; code that stores a value and
-// relies on reading that same key back immediately should use a cache type
-// without an admission policy, such as [Clock] or [Cache].
 // Set panics with [ErrInvalidKey] if key cannot be represented safely. Use
 // [TinyLFU.SetErr] to receive that error instead.
 func (c *TinyLFU[K, V]) Set(key K, value V) {
@@ -543,7 +528,6 @@ func (s *tinyShard[K, V]) moveToProbationLocked(n *tinyNode[K, V]) {
 // dropLocked removes a detached node from the cache. Caller must have already
 // removed it from its list.
 func (s *tinyShard[K, V]) dropLocked(n *tinyNode[K, V]) (K, V, bool) {
-	n.dead = true
 	delete(s.items, n.key)
 	return n.key, n.val, true
 }
@@ -724,17 +708,6 @@ func (c *TinyLFU[K, V]) ShardCount() int {
 	return len(c.shards)
 }
 
-// appendNodesLocked appends every node of a shard, window first, then
-// probation, then protected. Caller must hold at least a read lock.
-func (s *tinyShard[K, V]) appendNodesLocked(nodes []*tinyNode[K, V]) []*tinyNode[K, V] {
-	for _, l := range []*tinyList[K, V]{&s.window, &s.probation, &s.protected} {
-		for n := l.head; n != nil; n = n.next {
-			nodes = append(nodes, n)
-		}
-	}
-	return nodes
-}
-
 // Keys returns a slice of all keys in the cache.
 //
 // The order is unspecified: TinyLFU keeps no global recency order, and shards
@@ -742,12 +715,12 @@ func (s *tinyShard[K, V]) appendNodesLocked(nodes []*tinyNode[K, V]) []*tinyNode
 // shard and is not atomic with respect to concurrent updates.
 func (c *TinyLFU[K, V]) Keys() []K {
 	keys := make([]K, 0, c.Len())
-	var nodes []*tinyNode[K, V]
 	for _, s := range c.shards {
 		s.mu.RLock()
-		nodes = s.appendNodesLocked(nodes[:0])
-		for _, n := range nodes {
-			keys = append(keys, n.key)
+		for _, l := range []*tinyList[K, V]{&s.window, &s.probation, &s.protected} {
+			for n := l.head; n != nil; n = n.next {
+				keys = append(keys, n.key)
+			}
 		}
 		s.mu.RUnlock()
 	}
@@ -761,12 +734,12 @@ func (c *TinyLFU[K, V]) Keys() []K {
 // when no other goroutine writes to the cache between the two calls.
 func (c *TinyLFU[K, V]) Values() []V {
 	values := make([]V, 0, c.Len())
-	var nodes []*tinyNode[K, V]
 	for _, s := range c.shards {
 		s.mu.RLock()
-		nodes = s.appendNodesLocked(nodes[:0])
-		for _, n := range nodes {
-			values = append(values, n.val)
+		for _, l := range []*tinyList[K, V]{&s.window, &s.probation, &s.protected} {
+			for n := l.head; n != nil; n = n.next {
+				values = append(values, n.val)
+			}
 		}
 		s.mu.RUnlock()
 	}
@@ -777,12 +750,12 @@ func (c *TinyLFU[K, V]) Values() []V {
 // under one shard lock, but the aggregate is not an atomic cache-wide snapshot.
 func (c *TinyLFU[K, V]) Items() []Item[K, V] {
 	items := make([]Item[K, V], 0, c.Len())
-	var nodes []*tinyNode[K, V]
 	for _, s := range c.shards {
 		s.mu.RLock()
-		nodes = s.appendNodesLocked(nodes[:0])
-		for _, n := range nodes {
-			items = append(items, Item[K, V]{Key: n.key, Value: n.val})
+		for _, l := range []*tinyList[K, V]{&s.window, &s.probation, &s.protected} {
+			for n := l.head; n != nil; n = n.next {
+				items = append(items, Item[K, V]{Key: n.key, Value: n.val})
+			}
 		}
 		s.mu.RUnlock()
 	}
@@ -805,7 +778,7 @@ func (c *TinyLFU[K, V]) Clear() {
 		var evicted []evictedItem[K, V]
 		if onEvict != nil || onRemove != nil {
 			evicted = make([]evictedItem[K, V], 0, len(s.items))
-			for _, n := range s.appendNodesLocked(nil) {
+			for _, n := range s.items {
 				evicted = append(evicted, evictedItem[K, V]{key: n.key, val: n.val})
 			}
 		}
@@ -915,9 +888,7 @@ func (s *tinyShard[K, V]) resizeLocked(shardCap int, collect bool) ([]evictedIte
 	for s.protected.len > s.protectedCap {
 		demoted := s.protected.tail
 		s.protected.remove(demoted)
-		demoted.segment = tinyProbation
-		atomic.StoreUint32(&demoted.hits, 0)
-		s.probation.pushFront(demoted)
+		s.moveToProbationLocked(demoted)
 	}
 
 	var evicted []evictedItem[K, V]
